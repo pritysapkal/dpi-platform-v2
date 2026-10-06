@@ -36,6 +36,7 @@ Focus: ONE data entity (Pull Requests) taken all the way through the full pipeli
    - [x] Written in own words — not ghostwritten/templated (drafted this session — read it over and adjust tone/wording to sound like you before treating it as final)
 
 ## Explicitly Out of Scope (Don't Add These — They Dilute Analytics Engineering Positioning)
+> **Scope update (2026-10-06):** the project is now also aimed at an AI-Native Software Engineering role, so an LLM agent over the finished pipeline was added deliberately — see "New Addition: DPIP Agent" below. It reads the existing marts and doesn't change the pipeline. The items below are still out of scope.
 - AI-assisted PR classification
 - Predictive ML modeling (e.g., predicting MTTR)
 - Multiple additional data sources (commits, issues, workflows) — one entity done deeply > many done shallowly
@@ -54,6 +55,31 @@ All 5 locked-in scope items are complete: built, verified locally (`dbt build` p
 - [x] dashboard/requirements.txt (streamlit==1.64.0, duckdb==1.5.5) and dashboard/README.md (one-line run instructions) added.
 - [x] Main README.md updated: architecture diagram now names the dashboard stage explicitly, a new "Dashboard" section explains the Evidence.dev pivot and how to run it, "Running it locally" includes the dashboard command, and a known-limitations bullet notes it's a script (no auth/sharing), not a full BI tool.
 
+## New Addition: DPIP Agent (AI-native extension, 2026-10-06)
+A tool-calling Gemini agent in `agent/` that answers plain-English questions about the DORA metrics. No dbt models were changed.
+- [x] **Step 0 — repo review.** Found three gaps between the original brief and the data: there is only one repo (encode/httpx, no repo dimension), no change failure rate (no deployment/incident data), and data ends 2026-02-23 (so "last quarter" has none). Decisions: `repo` accepts only encode/httpx, CFR is reported as "not available" (no proxy metric), and a `get_data_coverage()` tool plus today's date in the system prompt.
+- [x] **Step 1 — setup.** `agent/` package, pinned `agent/requirements.txt` (google-genai 2.28.0, duckdb 1.5.5, python-dotenv 1.2.3, pytest 9.1.1), `agent/.env` (gitignored) and `.env.example`. DuckDB is opened `read_only=True` with `enable_external_access=False`. Default model `gemini-3.8-flash` (`gemini-2.5-flash` is closed to new keys); `gemini-3.5-flash-lite` confirmed working on the free tier.
+- [x] **Step 2 — tools and guardrails.** Six tools: list_tables, get_schema, get_data_coverage, get_dora_metrics, compare_periods, run_readonly_sql. Lead time uses the **median** as the headline, plus the PR-weighted mean and the dashboard's day-weighted figure. SQL guardrails in three layers: DuckDB's parser (`json_serialize_sql`) with a whitelist walk of the parse tree, then a regex check, then the locked-down connection. **Found and blocked a CTE-shadowing bypass** (`WITH stg_x AS (SELECT * FROM stg_x)` reads the real table). 200-row cap, 10 s timeout via `con.interrupt()`, strict date validation.
+- [x] **Step 3 — agent loop.** Manual function-calling loop (automatic calling disabled), max 6 tool calls, then a fixed "could not complete" answer. Bad tool calls (unknown name, bad or missing args) go back to the model as error dicts. Tool results are wrapped as `untrusted_tool_data` and size-capped (prompt-injection defence). JSONL traces with the model recorded on every line and no API key. Retries only 429/500/503/timeouts: 5 attempts, backoff + jitter, honouring Retry-After and Gemini's retryDelay. 400/401/403/404 fail fast. 30 s request timeout. Optional visible `GEMINI_FALLBACK_MODEL` and a `--sticky-fallback` flag. The Gemini call sits behind a `ModelClient` interface so the loop is tested offline with a fake model.
+- [x] **Step 4 — evals.** 17 questions (11 metric, 6 traps: CFR, single repo, last quarter, delete request, mocked prompt injection, ambiguous). Ground truth is SQL run at eval time. Each question is scored on correct tools, numbers within tolerance, and trap handling. Runs are resumable (saved per question), use temperature 0 and no fallback, and take a `--model` argument. **gemini-3.5-flash-lite: 16/17** (17/17 tools, 11/11 numbers, 5/6 traps). The one real failure: it resolved "last quarter" to Q1 2026 instead of Q3 2026. A scorer false negative on the injection trap was found and fixed (regression test added). gemini-3.8-flash is **pending**: it returned 503 "high demand" all day.
+- [x] **Fix for t03: relative dates resolved in code (2026-10-06).**
+  - **Failure:** "last quarter" on 2026-10-06 became Q1 2026 instead of Q3 2026.
+  - **Root cause:** the LLM was doing date arithmetic itself, despite today's date being in the prompt.
+  - **Fix (structural, not a prompt tweak):**
+    - New `agent/periods.py` with `resolve_period(phrase, today)`: calendar quarters, Monday weeks, correct month ends and leap years, rolling "last N days/weeks/months", explicit quarters, halves, months and years. Unrecognised phrases return an error, never a guess.
+    - `resolve_period` is exposed as a tool, and `get_dora_metrics` / `compare_periods` accept a `period` phrase (rejected if dates are passed too).
+    - The system prompt now says never to compute dates.
+    - **The enforcing mechanism:** the agent loop resolves time phrases found in the question and rejects any explicit date pair that doesn't match.
+  - **Evals:** t03 left unchanged; 3 new questions (last year, this year, Q4 2024 vs Q4 2023) with `current_date`-based SQL ground truth.
+  - **Scorer:**
+    - It now removes dates before matching numbers, so "2026-01-01" can't supply a "1".
+    - `--fresh` archives the previous run to `runs/history/` so results.md keeps a before/after table.
+  - **Result on gemini-3.5-flash-lite:** before 16/17 (t03 FAIL); targeted after-check 4/4; full fresh run **20/20** (20/20 tools, 14/14 numbers, 6/6 traps).
+  - **Caveat:** the loop's date check never fired in the eval (the model used phrases); it is proven by unit tests only.
+- [x] **201 unit tests** pass in about 6 s with no API key: guardrails, period resolution, tools against the real DB, the agent loop with a fake model (including the date check), the retry/fallback client with a fake SDK, and the scorer.
+- [ ] Step 5 (Streamlit chat page + MCP server) — deferred; optional.
+
 ## Next Immediate Step
-- Review README.md tone/wording to make sure it reads as your own voice, not mine — the one remaining open item across the whole project
-- Everything else, including the dashboard, is done; any further work is a deliberate new addition, not a gap
+- Re-run the eval on gemini-3.8-flash once it stops returning 503: `python -m agent.evals.run_evals --model gemini-3.8-flash` (resumable; fills in the pending column in agent/evals/results.md and the README table)
+- Regenerate the Gemini API key before publishing the repo (the current one was pasted into a chat)
+- Review README.md tone/wording to make sure it reads as your own voice, not mine (now including the DPIP Agent section)

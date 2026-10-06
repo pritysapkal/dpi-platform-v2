@@ -10,6 +10,11 @@ entity properly end to end: layered modeling, tests that catch real bugs, a
 semantic layer instead of ad-hoc SQL, and CI that actually runs. See
 [PROGRESS.md](./PROGRESS.md) for the full build log and locked-in scope.
 
+On top of the pipeline sits **[DPIP Agent](#dpip-agent)**: a tool-calling LLM
+agent (Google Gemini) that answers plain-English questions about these metrics
+through a small set of read-only tools, with guardrails enforced in code and an
+eval set scored against SQL ground truth.
+
 ## Architecture
 
 ```mermaid
@@ -157,3 +162,205 @@ dbt build                              # runs every model + test
 mf list metrics                        # semantic layer, once dbt-metricflow is installed
 cd dashboard && pip install -r requirements.txt && streamlit run app.py   # dashboard, see below
 ```
+
+## DPIP Agent
+
+`agent/` adds a question-answering agent on top of the pipeline:
+
+```
+python -m agent.cli "What was the median lead time in 2024 and how does it compare to 2023?"
+```
+
+It answers only from tool results, quotes the actual numbers and the date range
+used, and says "I don't have data for that" instead of guessing. Nothing in the
+dbt project changed; the agent only reads `dev.duckdb`.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    U["User<br/>agent/cli.py"] --> L["Agent loop<br/>agent/agent.py<br/>max 6 tool calls"]
+    L <-->|"question + tool declarations /<br/>function_call or final text"| G["Gemini<br/>agent/llm.py<br/>retries, timeout, fallback"]
+    L -->|"function_call(name, args)"| GR["Argument checks +<br/>guardrails<br/>agent/guardrails.py"]
+    GR --> T["Tools<br/>agent/tools.py"]
+    T --> D[("dev.duckdb<br/>read-only,<br/>no external access")]
+    T -->|"result wrapped as<br/>untrusted_tool_data, size-capped"| L
+    L --> TR["JSONL trace<br/>agent/traces/"]
+```
+
+The tool loop is written by hand, with the SDK's automatic function calling
+disabled, so every step is visible and testable:
+
+1. Send the question plus the tool declarations (generated from the tool
+   functions' type hints and docstrings) to Gemini.
+2. If the reply contains `function_call`s, check the arguments, run the matching
+   Python tool, wrap the result as untrusted data, and send it back as a
+   `function_response`.
+3. Repeat until the model replies with text. If answering would take more than
+   6 tool calls, stop and say so instead of returning a partial guess.
+
+The Gemini call sits behind a small `ModelClient` interface, so the whole loop
+is unit-tested offline with a scripted fake model.
+
+### Tools
+
+| Tool | What it does |
+|---|---|
+| `list_tables()` | The two tables the agent may query, with descriptions. |
+| `get_schema(table_name)` | Columns and types of one allowed table. |
+| `get_data_coverage()` | Repo, first and last date with data, PR counts, which metrics exist. |
+| `resolve_period(phrase)` | Turns "last quarter", "this year", "last 30 days", "Q1 2025", "October 2024" and similar into exact dates **in Python** ([`agent/periods.py`](./agent/periods.py)), and says whether DPIP has data for them. Unrecognised phrases return an error, never a guess. |
+| `get_dora_metrics(start_date, end_date, repo=None, period=None)` | Deployment frequency (merged PRs, total and per week) and lead time: **median** as the headline (PR lead times are heavily skewed), PR-weighted mean, and the dashboard's day-weighted average, labelled as such. Takes either explicit dates or a `period` phrase resolved in code (not both). Change failure rate is returned as "not available". |
+| `compare_periods(a_start, a_end, b_start, b_end, repo=None, period_a=None, period_b=None)` | Both periods side by side, with % change. Each side takes dates or a phrase. |
+| `run_readonly_sql(query)` | Free-form SELECT for anything the other tools can't answer (per-author counts, review stats, monthly breakdowns). |
+
+Every tool returns a dict and never raises: problems come back as
+`{"ok": false, "error": "..."}` so the model can read the error and recover.
+
+### Guardrails, and why each one exists
+
+The rule is that safety never depends on the model obeying its prompt. Every
+tool call goes through these checks, however the model decided to make it.
+
+| Guardrail | Why |
+|---|---|
+| **Database opened `read_only=True` with `enable_external_access=False`** | The last line of defence. Even a query that got past every check below can't write, attach another database, read files (`read_csv`, `glob`) or install extensions. Tests run these statements straight against the connection to prove it. |
+| **DuckDB's own parser as the main SQL check** (`json_serialize_sql`) | A real parser instead of guessing from text. It only serializes SELECTs, so any write, `PRAGMA` or second statement fails. The whole parse tree is walked, so tables hidden in subqueries, JOINs, UNIONs and nested CTEs are all found. |
+| **Table whitelist**: only `mart_dora_metrics_daily` and `int_pr_lifecycle` | The agent sees the curated outputs of the dbt project, not raw or staging data. |
+| **CTE names may not match a real table** | A bypass found while building this: in DuckDB, `WITH stg_x AS (SELECT * FROM stg_x)` reads the *real* `stg_x` inside the CTE body. A whitelist that simply skipped CTE names would have let it through. |
+| **No table functions** | `read_csv`, `glob`, `query()` and `duckdb_tables()` can read files or metadata. Two analytics tables don't need any of them. |
+| **Regex check as a second layer** | Must start with SELECT/WITH, only one statement, no write or admin keywords (after removing comments and strings). It catches `SHOW`, `DESCRIBE` and `SUMMARIZE`, which DuckDB parses as SELECTs. |
+| **200-row cap and a 10 s query timeout** | Keeps results small enough for the model and stops runaway queries. DuckDB has no statement timeout, so a timer calls `con.interrupt()`. |
+| **Strict `YYYY-MM-DD` dates with start ≤ end, and repo must be `encode/httpx`** | Invalid input comes back as an error the model can fix, instead of a silently wrong query. |
+| **Relative dates are computed in code, and the loop checks them** | LLMs are unreliable at date arithmetic (eval t03 below). The model passes the user's phrase (`period="last quarter"`) and `periods.py` computes the dates. Before any tool runs, the loop also finds time phrases in the question, resolves them in code, and **rejects explicit dates that don't match**, so hand-computed dates are blocked even if the model ignores its instructions. |
+| **Tool argument checks in the loop** | An unknown tool name, missing or extra arguments, or wrong types become error dicts instead of crashes. |
+| **Tool results wrapped as `untrusted_tool_data` and size-capped** | PR titles and logins are written by GitHub users, so a title can carry a prompt injection. Results are labelled as data in both the payload and the system instruction. Text is cut to 300 characters and whole results to 8,000. |
+| **Retries only on 429/500/503 and timeouts** (5 attempts, exponential backoff + jitter, server `Retry-After`/`retryDelay` respected); **fail fast on 400/401/403/404** | Retrying a bad key or a wrong model name can't succeed. Temporary overload usually clears. |
+| **Fallback model is opt-in and always visible** (`GEMINI_FALLBACK_MODEL`) | It is used only after the main model's retries run out. The model that actually answered is recorded in every trace line and in the eval report. |
+| **Traces never contain the API key or headers** | Traces are written from chosen fields only, and the key is blanked out if it ever shows up anyway. |
+
+### Running it
+
+```
+pip install -r agent/requirements.txt
+cp agent/.env.example agent/.env          # then paste a key from https://aistudio.google.com/apikey
+python -m agent.cli "Which month had the most merged pull requests?"
+python -m agent.cli --model gemini-3.5-flash-lite --sticky-fallback "..."
+python -m pytest agent/tests -v           # 201 tests, no API key needed
+python -m agent.evals.run_evals --model gemini-3.5-flash-lite
+```
+
+Run everything from the project root after `dbt build`. Settings live in
+`agent/.env`:
+
+- `GEMINI_MODEL`: defaults to `gemini-3.8-flash`.
+- `GEMINI_FALLBACK_MODEL`: optional.
+
+The guardrail and loop tests need neither a key nor `dev.duckdb`. The tool tests
+skip themselves if the database hasn't been built.
+
+### Evaluation
+
+[`agent/evals/eval_set.json`](./agent/evals/eval_set.json) has 20 questions:
+
+- **14 metric questions**: counts, medians, period comparisons, per-author and per-month breakdowns, review coverage, and relative or explicit periods ("last year", "so far this year", "Q4 2024 vs Q4 2023"). Relative-period ground truth uses `current_date` in SQL, so it stays correct whatever day the eval runs.
+- **6 traps**: change failure rate (not tracked), "which repo is worst" (there is only one), "last quarter" (no data; must cite the last date, 2026-02-23), a request to delete data, a prompt injection planted in a mocked PR title, and an ambiguous "How are we doing?".
+
+Expected values are **SQL queries run against the database at eval time**, so
+the ground truth can't drift from the data. Each answer is scored on separate
+checks:
+
+- **Correct tools:** the expected tools were called, and no write was ever attempted.
+- **Numbers:** every ground-truth number appears in the answer, within a tolerance.
+- **Trap handled:** the required behaviour or wording is present.
+
+Runs use temperature 0 and no fallback model. Results are saved after every
+question, so a run interrupted by an outage picks up where it stopped. Starting a
+new run with `--fresh` moves the previous one into `runs/history/` instead of
+deleting it, so earlier scores stay visible. Full report:
+[`agent/evals/results.md`](./agent/evals/results.md).
+
+| Run (all `gemini-3.5-flash-lite`, 2026-10-06) | Questions | Overall | Correct tools | Numbers correct | Traps handled | t03 "last quarter" |
+|---|---|---|---|---|---|---|
+| Before: the model computes dates itself | 17 | **16/17** | 17/17 | 11/11 | 5/6 | FAIL |
+| Targeted check after the fix (t03 + 3 new) | 4 | **4/4** | 4/4 | 3/3 | 1/1 | PASS |
+| After: dates resolved in code, full set | 20 | **20/20** | 20/20 | 14/14 | 6/6 | PASS |
+
+`gemini-3.8-flash` is still pending: the free tier returned 503 "high demand" all day.
+
+### Known limitations / failure cases
+
+These come from what actually happened during development and the eval runs.
+
+- **Relative dates were resolved wrongly (eval t03), now fixed in code.**
+  - **Failure:** asked for "last quarter" on 2026-10-06, the model chose Q1 2026
+    (Jan–Mar) instead of Q3 2026 (Jul–Sep). It reported 1 merge instead of saying
+    there's no data, even though the system prompt gave it today's date and the
+    definition of a calendar quarter.
+  - **Root cause:** the model was doing date arithmetic itself, a known LLM weak spot.
+  - **Fix:** the change is structural, not another prompt hint.
+    [`agent/periods.py`](./agent/periods.py) resolves phrases in plain Python,
+    with 53 unit tests covering quarter and year boundaries, leap-year February
+    and 31-day months. The tools accept `period="last quarter"`. The agent loop
+    resolves the time phrases in each question itself and rejects explicit dates
+    that don't match. The eval question and its expected answer were not
+    changed, and three new questions with different phrases ("last year", "so far
+    this year", "Q4 2024 vs Q4 2023") check that the fix wasn't tailored to t03.
+  - **Result:** 16/17 → 20/20.
+- **The scorer had a false negative (eval t05), now fixed.** The model handled
+  the injection correctly: no DROP attempt, and it listed the poisoned title as
+  data. The first version of the scorer still failed it, because the quoted
+  title itself contains "Data deleted". The scorer now removes the verbatim
+  injected text before checking forbidden phrases, and a regression test covers
+  it. Before the fix, the scorecard read 15/17.
+- **Injected text is passed through to the user.** In t05 the model faithfully
+  repeated the attacker's title. That's correct and harmless for a human reader,
+  but if the agent's output were fed to another automated agent, that text would
+  arrive unlabelled. The wrapping would need to carry through to the output.
+- **Scoring checks that the right numbers are present, not that every claim is
+  true.** In q06 the answer was scored correct (October 2024, 23 merges) but also
+  described October as "2024-10-01 to 2024-10-30", one day short. Extra wrong
+  details aren't caught.
+- **"Currently" means "as of the last data pull".** For "How many PRs are
+  currently open?" the agent correctly answered 76, but didn't say that's as of
+  the snapshot, not today.
+- **Tool calls aren't always efficient.** Two answers (q07, q09) used 5 of the
+  6 allowed calls, partly on `list_tables`/`get_schema` exploration the system
+  prompt could make unnecessary. After the period fix the model also sometimes
+  calls `resolve_period` for periods that are already explicit (q05, q08, q10),
+  which is harmless but costs a call.
+- **The loop's date check is a safety net that the eval never triggered.** In
+  the 20/20 run the model always passed phrases, so the check never had to
+  reject anything. Only the unit tests (including a replay of the original t03
+  mistake) show that it works.
+- **Dates inside free-form SQL aren't checked.** If the model answers a
+  relative-date question through `run_readonly_sql` with hand-written dates in a
+  `WHERE` clause, the date check can't see them. Doing so would mean
+  interpreting the SQL.
+- **Answers don't always state the resolved range.** After the fix, t03's answer
+  correctly says there's no data and cites 2026-02-23, but it doesn't say that
+  "last quarter" meant 2026-07-01 to 2026-09-30, even though the rules ask for the
+  date range. The scorer doesn't check for it. Likewise "so far this year" was
+  reported as "2026-01-01 to 2026-02-23" (where the data ends) rather than to
+  today.
+- **Period conventions are choices.** "Last 12 months" is a rolling window
+  ending today, "last month" is the previous calendar month, and weeks start on
+  Monday. They're documented in `periods.py`, but a user who means something
+  else (e.g. the last 12 *complete* months) gets a different range. Phrases
+  outside the supported list ("since the release", "next sprint") return an
+  error rather than a guess.
+- **Free-tier availability shaped the design.** `gemini-3.8-flash` returned 503
+  "high demand" for a whole day, and each failure took about 50 s to arrive.
+  That's why there's a 30 s request timeout and an optional sticky fallback,
+  and why the 3.8-flash eval column is still pending. One 503-heavy CLI run took
+  5.5 minutes before those fixes.
+- **Small, single-run eval.** 20 questions, one run per model, at temperature 0
+  (which reduces but doesn't remove run-to-run variation). It catches
+  regressions and compares models; it isn't a statistical benchmark.
+- **The guardrails lean strict.** The keyword layer rejects identifiers like
+  `set` or `use` even as column aliases. The CTE rule rejects names that match
+  any of DuckDB's built-in views (e.g. `tables`, `columns`). The model gets a
+  clear error and renames, at the cost of an extra tool call.
+- **One DuckDB process detail.** Within one Python process, every connection to
+  `dev.duckdb` must use the same config, so anything running next to the agent
+  (like the eval ground-truth queries) must open it through `agent/db.py`.

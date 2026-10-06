@@ -8,3 +8,6 @@ venv/
 venv/
 *.duckdb
 .env
+agent/traces/
+__pycache__/
+.pytest_cache/
