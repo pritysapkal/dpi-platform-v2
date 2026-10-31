@@ -2,9 +2,15 @@ name: dbt CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
     branches: [main]
+
+# A newer run on the same branch/PR cancels the older one, so frequent pushes
+# don't stack up live GitHub fetches and burn through the API rate limit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   dbt-build-and-test:
