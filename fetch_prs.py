@@ -9,7 +9,8 @@ import pandas as pd
 # ---------- settings ----------
 OWNER = "encode"
 REPO = "httpx"
-PR_LIMIT = 500
+# Fetch every PR created on or after this date, so every year in the data is complete.
+START_DATE = "2023-01-01"
 DB_PATH = "dev.duckdb"
 
 # Every HTTP call gives up after these many seconds instead of hanging forever.
@@ -129,13 +130,21 @@ def get_with_retry(url, headers, params=None, http_get=httpx.get, sleep=time.sle
     raise GitHubFetchError(f"GET {url} still failing after {MAX_ATTEMPTS} attempts ({last_problem}).")
 
 
-def fetch_recent_prs(owner, repo, limit, headers):
-    """Page through /pulls, newest first, until `limit` PRs are collected."""
-    prs = []
+def fetch_prs_since(owner, repo, start_date, headers, get=get_with_retry):
+    """Every PR created on or after `start_date` (YYYY-MM-DD), newest first.
+
+    The list is sorted by creation date, newest first, so we page until we reach a PR
+    older than start_date and stop there: everything after it is older still.
+
+    Pages can overlap: if a PR is opened while we are paging, every older PR shifts
+    down one slot and the last PR of page N reappears at the top of page N+1. So PRs
+    are de-duplicated by number (first copy wins).
+    """
+    prs = {}
     page = 1
     url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
 
-    while len(prs) < limit:
+    while True:
         params = {
             "state": "all",
             "sort": "created",
@@ -143,14 +152,21 @@ def fetch_recent_prs(owner, repo, limit, headers):
             "per_page": 100,
             "page": page,
         }
-        response = get_with_retry(url, headers, params)
-        batch = response.json()
+        batch = get(url, headers, params).json()
         if not batch:
-            break  # ran out of PRs before hitting the limit
-        prs.extend(batch)
+            break  # no more PRs at all
+        reached_older_prs = False
+        for pr in batch:
+            # created_at looks like "2023-01-05T10:00:00Z"; ISO dates compare correctly as text.
+            if pr["created_at"][:10] < start_date:
+                reached_older_prs = True
+            else:
+                prs.setdefault(pr["number"], pr)
+        if reached_older_prs:
+            break
         page += 1
 
-    return prs[:limit]
+    return list(prs.values())
 
 
 def fetch_reviews_for_pr(owner, repo, pr_number, headers, get=get_with_retry):
@@ -175,8 +191,8 @@ def main():
         raise ValueError("GH_TOKEN not set. Run: export GH_TOKEN='your_token'")
     headers = build_headers(token)
 
-    print(f"Fetching pull requests for {OWNER}/{REPO}...")
-    raw_prs = fetch_recent_prs(OWNER, REPO, PR_LIMIT, headers)
+    print(f"Fetching pull requests for {OWNER}/{REPO} created on or after {START_DATE}...")
+    raw_prs = fetch_prs_since(OWNER, REPO, START_DATE, headers)
     print(f"Found {len(raw_prs)} pull requests.")
 
     pr_rows = []

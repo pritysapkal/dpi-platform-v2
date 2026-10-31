@@ -208,3 +208,71 @@ def test_loaded_at_lands_in_duckdb_as_a_plain_timestamp():
     con.execute("CREATE TABLE t AS SELECT * FROM df")
     assert con.execute("select typeof(_loaded_at), _loaded_at from t").fetchone() == (
         "TIMESTAMP", datetime.datetime(2026, 1, 2, 3, 4, 5))
+
+
+# ---------- PR window (START_DATE) and de-duplication ----------
+
+def pr(number, created):
+    return {"number": number, "created_at": created + "T10:00:00Z"}
+
+
+class FakePullsApi:
+    """Serves a fixed list of PR pages (newest first) and records which pages were requested."""
+
+    def __init__(self, *pages):
+        self.pages = list(pages)
+        self.requested = []
+
+    def get(self, url, headers, params):
+        assert params["sort"] == "created" and params["direction"] == "desc" and params["state"] == "all"
+        self.requested.append(params["page"])
+        index = params["page"] - 1
+        return fake_response(200, json=self.pages[index] if index < len(self.pages) else [])
+
+
+def numbers(prs):
+    return [p["number"] for p in prs]
+
+
+def test_stops_at_start_date_and_does_not_request_later_pages():
+    api = FakePullsApi(
+        [pr(10, "2024-05-01"), pr(9, "2023-06-01")],
+        [pr(8, "2023-01-02"), pr(7, "2022-12-31"), pr(6, "2022-12-01")],  # 7 is the first too-old PR
+        [pr(5, "2022-01-01")],  # must never be requested
+    )
+    got = fetch_prs.fetch_prs_since("encode", "httpx", "2023-01-01", {}, get=api.get)
+    assert numbers(got) == [10, 9, 8]
+    assert api.requested == [1, 2]
+
+
+def test_pr_created_exactly_on_start_date_is_included():
+    api = FakePullsApi([pr(2, "2023-01-01"), pr(1, "2022-12-31")])
+    got = fetch_prs.fetch_prs_since("encode", "httpx", "2023-01-01", {}, get=api.get)
+    assert numbers(got) == [2]
+
+
+def test_duplicates_from_shifting_pages_are_removed():
+    # A PR opened mid-run pushes #5 from the end of page 1 onto the top of page 2.
+    api = FakePullsApi(
+        [pr(7, "2024-03-01"), pr(6, "2024-02-01"), pr(5, "2024-01-01")],
+        [pr(5, "2024-01-01"), pr(4, "2023-12-01"), pr(3, "2022-01-01")],
+    )
+    got = fetch_prs.fetch_prs_since("encode", "httpx", "2023-01-01", {}, get=api.get)
+    assert numbers(got) == [7, 6, 5, 4]
+    assert len(set(numbers(got))) == len(got)
+
+
+def test_whole_repo_newer_than_start_date_ends_on_the_empty_page():
+    api = FakePullsApi([pr(2, "2024-01-01"), pr(1, "2023-05-01")])
+    got = fetch_prs.fetch_prs_since("encode", "httpx", "2023-01-01", {}, get=api.get)
+    assert numbers(got) == [2, 1]
+    assert api.requested == [1, 2]  # page 2 came back empty
+
+
+def test_no_prs_at_all():
+    api = FakePullsApi()
+    assert fetch_prs.fetch_prs_since("encode", "httpx", "2023-01-01", {}, get=api.get) == []
+
+
+def test_start_date_constant_is_2023():
+    assert fetch_prs.START_DATE == "2023-01-01"
