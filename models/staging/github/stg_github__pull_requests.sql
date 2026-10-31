@@ -15,7 +15,8 @@ cleaned as (
         cast(created_at as timestamp) as created_at,
         cast(updated_at as timestamp) as updated_at,
         cast(merged_at as timestamp) as merged_at,
-        cast(closed_at as timestamp) as closed_at
+        cast(closed_at as timestamp) as closed_at,
+        cast(_loaded_at as timestamp) as _loaded_at
 
     from source
 

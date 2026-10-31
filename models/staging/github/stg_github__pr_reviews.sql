@@ -11,7 +11,8 @@ cleaned as (
         review_id,
         reviewer_login,
         review_state,
-        cast(submitted_at as timestamp) as submitted_at
+        cast(submitted_at as timestamp) as submitted_at,
+        cast(_loaded_at as timestamp) as _loaded_at
 
     from source
 

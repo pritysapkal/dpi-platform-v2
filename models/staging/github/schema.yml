@@ -9,6 +9,10 @@ models:
         tests:
           - unique
           - not_null
+      - name: _loaded_at
+        description: When fetch_prs.py loaded this row (UTC, no timezone marker). Identical for every row of one fetch run. Used to tell how fresh the data is.
+        tests:
+          - not_null
 
   - name: stg_github__pr_reviews
     description: One row per review left on a pull request. A PR can have zero, one, or many reviews, so pr_number is not unique here.
@@ -20,5 +24,9 @@ models:
           - not_null
       - name: pr_number
         description: The PR this review belongs to. Not unique — one PR can have multiple reviews.
+        tests:
+          - not_null
+      - name: _loaded_at
+        description: When fetch_prs.py loaded this row (UTC, no timezone marker). Same value as the PR rows from the same fetch run.
         tests:
           - not_null

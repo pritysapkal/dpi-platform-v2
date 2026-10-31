@@ -1,3 +1,4 @@
+import datetime
 import os
 import random
 import time
@@ -30,6 +31,23 @@ TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 
 class GitHubFetchError(Exception):
     """A GitHub request failed for good (not retryable, or retries ran out)."""
+
+
+def utc_now_naive():
+    """Current time in UTC, stored WITHOUT a timezone marker.
+
+    A timezone-aware value would be converted to this machine's local time when it
+    goes into DuckDB, so a laptop and a CI runner would record different clock times.
+    Plain UTC, always, keeps `_loaded_at` identical in meaning everywhere.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+
+def add_loaded_at(df, loaded_at):
+    """Stamp every row of a raw table with when this fetch ran (one value per run)."""
+    df = df.copy()
+    df["_loaded_at"] = loaded_at
+    return df
 
 
 def build_headers(token):
@@ -197,6 +215,11 @@ def main():
 
     reviews_df = pd.DataFrame(review_rows)
     print(f"Found {len(reviews_df)} reviews across {len(raw_prs)} pull requests.")
+
+    # One timestamp for the whole run, so both raw tables say they were loaded together.
+    loaded_at = utc_now_naive()
+    pr_df = add_loaded_at(pr_df, loaded_at)
+    reviews_df = add_loaded_at(reviews_df, loaded_at)
 
     con = duckdb.connect(DB_PATH)
     con.execute("CREATE SCHEMA IF NOT EXISTS raw")

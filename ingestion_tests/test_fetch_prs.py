@@ -177,3 +177,34 @@ def test_runaway_pagination_stops_with_an_error():
     with pytest.raises(GitHubFetchError, match="more than"):
         fetch_prs.fetch_reviews_for_pr("encode", "httpx", 1, {}, get=api.get)
     assert len(api.pages_requested) == fetch_prs.MAX_REVIEW_PAGES
+
+
+# ---------- _loaded_at ----------
+
+def test_utc_now_naive_has_no_timezone_and_is_utc():
+    import datetime
+    stamp = fetch_prs.utc_now_naive()
+    assert stamp.tzinfo is None
+    real_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    assert abs((real_utc - stamp).total_seconds()) < 5  # UTC, whatever this machine's local zone is
+
+
+def test_add_loaded_at_stamps_every_row_with_one_value_and_leaves_input_alone():
+    import datetime
+    import pandas as pd
+    original = pd.DataFrame({"number": [1, 2, 3]})
+    stamp = datetime.datetime(2026, 1, 2, 3, 4, 5)
+    result = fetch_prs.add_loaded_at(original, stamp)
+    assert set(result["_loaded_at"]) == {pd.Timestamp(stamp)}
+    assert "_loaded_at" not in original.columns
+
+
+def test_loaded_at_lands_in_duckdb_as_a_plain_timestamp():
+    import datetime
+    import duckdb
+    import pandas as pd
+    df = fetch_prs.add_loaded_at(pd.DataFrame({"number": [1]}), datetime.datetime(2026, 1, 2, 3, 4, 5))
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE t AS SELECT * FROM df")
+    assert con.execute("select typeof(_loaded_at), _loaded_at from t").fetchone() == (
+        "TIMESTAMP", datetime.datetime(2026, 1, 2, 3, 4, 5))
