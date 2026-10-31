@@ -1,4 +1,5 @@
 import os
+import random
 import time
 import httpx
 import duckdb
@@ -15,12 +16,97 @@ DB_PATH = "dev.duckdb"
 HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 REQUEST_PAUSE_SECONDS = 0.05  # stay polite to GitHub's secondary rate limits
 
+# Retry policy for get_with_retry().
+MAX_ATTEMPTS = 5  # per request, including the first try
+BASE_DELAY_SECONDS = 2.0  # backoff: 2s, 4s, 8s, 16s (+ up to 1s of random jitter)
+MAX_BACKOFF_SECONDS = 60.0
+# If GitHub tells us to wait longer than this (e.g. the hourly quota is used up),
+# stop with a clear error instead of leaving a CI job hanging.
+MAX_SERVER_WAIT_SECONDS = 900.0
+TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+class GitHubFetchError(Exception):
+    """A GitHub request failed for good (not retryable, or retries ran out)."""
+
 
 def build_headers(token):
     return {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
     }
+
+
+def _server_wait_seconds(response, now):
+    """How long GitHub itself says to wait, or None if it gave no hint.
+
+    - Retry-After: seconds to wait (sent with 429s and secondary rate limits).
+    - X-RateLimit-Remaining: 0 plus X-RateLimit-Reset (a Unix timestamp): the
+      hourly quota is used up, wait until it resets.
+    """
+    retry_after = response.headers.get("retry-after")
+    if retry_after:
+        try:
+            return max(float(retry_after), 0.0)
+        except ValueError:
+            pass
+    if response.headers.get("x-ratelimit-remaining") == "0":
+        reset = response.headers.get("x-ratelimit-reset")
+        if reset and reset.isdigit():
+            return max(float(reset) - now() + 1, 0.0)
+    return None
+
+
+def get_with_retry(url, headers, params=None, http_get=httpx.get, sleep=time.sleep, now=time.time):
+    """GET a URL and return the response, retrying temporary failures.
+
+    Retried, with exponential backoff plus jitter (or GitHub's own wait hint):
+      - 429 and 5xx (500/502/503/504)
+      - 403 that carries a Retry-After or an exhausted X-RateLimit header, which is
+        how GitHub signals a secondary rate limit / used-up quota
+      - timeouts and network errors
+    Not retried (fails at once, since waiting can't fix it): every other 4xx, including
+    a plain 403 (bad permissions), 401 (bad token) and 404.
+
+    http_get, sleep and now are parameters only so tests can pass fakes and run offline.
+    """
+    last_problem = "no attempt made"
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        wait_hint = None
+        try:
+            response = http_get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_problem = f"{type(exc).__name__}: {exc}"
+        else:
+            if response.is_success:
+                return response
+            wait_hint = _server_wait_seconds(response, now)
+            retryable = response.status_code in TRANSIENT_STATUS_CODES or (
+                response.status_code == 403 and wait_hint is not None
+            )
+            if not retryable:
+                raise GitHubFetchError(
+                    f"GET {url} failed with HTTP {response.status_code} (not retryable): "
+                    f"{response.text[:200]}"
+                )
+            last_problem = f"HTTP {response.status_code}"
+
+        if attempt == MAX_ATTEMPTS:
+            break
+
+        if wait_hint is not None:
+            if wait_hint > MAX_SERVER_WAIT_SECONDS:
+                raise GitHubFetchError(
+                    f"GET {url}: {last_problem}, and GitHub asks us to wait {wait_hint:.0f}s "
+                    f"(more than the {MAX_SERVER_WAIT_SECONDS:.0f}s limit). Try again later."
+                )
+            delay = wait_hint
+        else:
+            delay = min(BASE_DELAY_SECONDS * 2 ** (attempt - 1), MAX_BACKOFF_SECONDS) + random.uniform(0, 1)
+        print(f"  [retry] {last_problem}; waiting {delay:.1f}s (attempt {attempt}/{MAX_ATTEMPTS})")
+        sleep(delay)
+
+    raise GitHubFetchError(f"GET {url} still failing after {MAX_ATTEMPTS} attempts ({last_problem}).")
 
 
 def fetch_recent_prs(owner, repo, limit, headers):
@@ -37,8 +123,7 @@ def fetch_recent_prs(owner, repo, limit, headers):
             "per_page": 100,
             "page": page,
         }
-        response = httpx.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
-        response.raise_for_status()
+        response = get_with_retry(url, headers, params)
         batch = response.json()
         if not batch:
             break  # ran out of PRs before hitting the limit
@@ -50,8 +135,7 @@ def fetch_recent_prs(owner, repo, limit, headers):
 
 def fetch_reviews_for_pr(owner, repo, pr_number, headers):
     url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
-    response = httpx.get(url, headers=headers, params={"per_page": 100}, timeout=HTTP_TIMEOUT)
-    response.raise_for_status()
+    response = get_with_retry(url, headers, {"per_page": 100})
     return response.json()
 
 
