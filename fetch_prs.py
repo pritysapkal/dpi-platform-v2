@@ -15,6 +15,8 @@ DB_PATH = "dev.duckdb"
 # connect is short (a dead network should fail fast); read is longer (GitHub can be slow).
 HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 REQUEST_PAUSE_SECONDS = 0.05  # stay polite to GitHub's secondary rate limits
+REVIEWS_PER_PAGE = 100  # GitHub's maximum page size
+MAX_REVIEW_PAGES = 50  # safety stop: 5,000 reviews on one PR means something is wrong
 
 # Retry policy for get_with_retry().
 MAX_ATTEMPTS = 5  # per request, including the first try
@@ -133,10 +135,20 @@ def fetch_recent_prs(owner, repo, limit, headers):
     return prs[:limit]
 
 
-def fetch_reviews_for_pr(owner, repo, pr_number, headers):
+def fetch_reviews_for_pr(owner, repo, pr_number, headers, get=get_with_retry):
+    """All reviews on one PR. GitHub returns at most 100 per page, so keep asking for
+    the next page until one comes back with fewer than 100 (or empty)."""
     url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
-    response = get_with_retry(url, headers, {"per_page": 100})
-    return response.json()
+    reviews = []
+    for page in range(1, MAX_REVIEW_PAGES + 1):
+        batch = get(url, headers, {"per_page": REVIEWS_PER_PAGE, "page": page}).json()
+        reviews.extend(batch)
+        if len(batch) < REVIEWS_PER_PAGE:
+            return reviews
+    raise GitHubFetchError(
+        f"PR #{pr_number} has more than {MAX_REVIEW_PAGES * REVIEWS_PER_PAGE} reviews; "
+        "stopping rather than looping forever."
+    )
 
 
 def main():

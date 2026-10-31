@@ -126,3 +126,54 @@ def test_backoff_is_capped():
     with pytest.raises(GitHubFetchError):
         s.run()
     assert max(s.sleeps) <= fetch_prs.MAX_BACKOFF_SECONDS + 1
+
+
+# ---------- review pagination ----------
+
+class FakeReviewsApi:
+    """Serves `total` reviews in pages, like GitHub: honours per_page and page, records the calls."""
+
+    def __init__(self, total):
+        self.reviews = [{"id": i} for i in range(1, total + 1)]
+        self.pages_requested = []
+
+    def get(self, url, headers, params):
+        page, per_page = params["page"], params["per_page"]
+        self.pages_requested.append(page)
+        start = (page - 1) * per_page
+        return fake_response(200, json=self.reviews[start:start + per_page])
+
+
+def fetch_all(total):
+    api = FakeReviewsApi(total)
+    got = fetch_prs.fetch_reviews_for_pr("encode", "httpx", 1, {}, get=api.get)
+    return api, got
+
+
+def test_250_reviews_are_all_fetched_across_three_pages():
+    api, got = fetch_all(250)
+    assert [r["id"] for r in got] == list(range(1, 251))  # none lost, none duplicated, in order
+    assert api.pages_requested == [1, 2, 3]  # 100 + 100 + 50, stops at the short page
+
+
+def test_exactly_100_reviews_needs_one_extra_empty_page():
+    api, got = fetch_all(100)
+    assert len(got) == 100
+    assert api.pages_requested == [1, 2]  # a full page might not be the last, so ask once more
+
+
+def test_few_reviews_use_a_single_call():
+    api, got = fetch_all(3)
+    assert len(got) == 3 and api.pages_requested == [1]
+
+
+def test_no_reviews():
+    api, got = fetch_all(0)
+    assert got == [] and api.pages_requested == [1]
+
+
+def test_runaway_pagination_stops_with_an_error():
+    api = FakeReviewsApi((fetch_prs.MAX_REVIEW_PAGES + 1) * fetch_prs.REVIEWS_PER_PAGE)
+    with pytest.raises(GitHubFetchError, match="more than"):
+        fetch_prs.fetch_reviews_for_pr("encode", "httpx", 1, {}, get=api.get)
+    assert len(api.pages_requested) == fetch_prs.MAX_REVIEW_PAGES
