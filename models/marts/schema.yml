@@ -18,3 +18,62 @@ models:
 
       - name: avg_lead_time_hours
         description: Average lead_time_hours across PRs merged this day. Null on zero-merge days — there's nothing to average, so it's left null rather than shown as 0.
+
+  - name: fct_pull_requests
+    description: >
+      Fact table, one row per pull request (open, merged or closed without merging),
+      built from int_pr_lifecycle. The single place PR-level metrics should be calculated:
+      lead time, review wait, review coverage, open-PR age. Adds a bot flag, a
+      review-before-merge flag and the data_as_of timestamp.
+    columns:
+      - name: pr_number
+        description: PR number, unique within the repo. Primary key of this model.
+        tests:
+          - unique
+          - not_null
+
+      - name: pr_state
+        description: GitHub's state for the PR, either open or closed. A merged PR is closed, see pr_lifecycle_stage to tell merged from closed-without-merge.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['open', 'closed']
+
+      - name: pr_lifecycle_stage
+        description: merged, closed_without_merge or open.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['merged', 'closed_without_merge', 'open']
+
+      - name: is_merged
+        description: True when the PR was merged.
+        tests:
+          - not_null
+
+      - name: author_login
+        description: GitHub login of the PR author.
+        tests:
+          - not_null
+
+      - name: is_bot
+        description: True when the author login ends in "[bot]" (for example dependabot[bot]). Human-only metrics should filter on is_bot = false, because bot PRs are opened and merged on a different rhythm.
+        tests:
+          - not_null
+
+      - name: was_reviewed_before_merge
+        description: True when the PR was merged and its first review came at or before the merge. False for unmerged PRs, for merged PRs with no review, and for merged PRs whose only review came after the merge. Basis of review coverage.
+        tests:
+          - not_null
+
+      - name: lead_time_hours
+        description: Hours from the PR opening to merging. Null for PRs that were not merged.
+        tests:
+          - non_negative
+
+      - name: data_as_of
+        description: When the data was last pulled from GitHub (UTC), from _loaded_at. Same value on every row. Measure anything "as of now", such as how long a PR has been open, against this and not against today's date.
+        tests:
+          - not_null
