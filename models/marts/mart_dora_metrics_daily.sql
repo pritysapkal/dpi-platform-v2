@@ -1,7 +1,9 @@
+-- Built on the PR-grain fact table, so the daily numbers are sums over the same rows
+-- every other PR metric uses.
 with merged_prs as (
 
     select *
-    from {{ ref('int_pr_lifecycle') }}
+    from {{ ref('fct_pull_requests') }}
     where is_merged = true
 
 ),

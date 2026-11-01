@@ -17,7 +17,13 @@ models:
           - non_negative
 
       - name: avg_lead_time_hours
-        description: Average lead_time_hours across PRs merged this day. Null on zero-merge days — there's nothing to average, so it's left null rather than shown as 0.
+        description: >
+          Average lead_time_hours across PRs merged this day. Null on zero-merge days —
+          there's nothing to average, so it's left null rather than shown as 0.
+          DO NOT USE FOR HEADLINE LEAD TIME. Averaging this column over several days gives
+          an average of daily averages, which weights a day with one merge the same as a
+          day with ten and is dominated by a few very slow PRs. Use the median or p90 of
+          lead_time_hours from fct_pull_requests instead.
 
   - name: fct_pull_requests
     description: >
