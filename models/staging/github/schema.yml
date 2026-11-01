@@ -26,6 +26,17 @@ models:
         description: The PR this review belongs to. Not unique — one PR can have multiple reviews.
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_github__pull_requests')
+                field: pr_number
+      - name: review_state
+        description: GitHub's state for the review. APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, or PENDING (a draft review that has not been submitted yet).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED', 'PENDING']
       - name: _loaded_at
         description: When fetch_prs.py loaded this row (UTC, no timezone marker). Same value as the PR rows from the same fetch run.
         tests:
