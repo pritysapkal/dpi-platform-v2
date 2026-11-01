@@ -1,49 +1,87 @@
 semantic_models:
-  - name: dora_metrics_daily
-    description: Daily DORA metrics computed from merged pull requests in mart_dora_metrics_daily.
-    model: ref('mart_dora_metrics_daily')
+  - name: pull_requests
+    description: >
+      One row per pull request (fct_pull_requests). The only semantic model for the DORA
+      metrics, so every figure is computed over individual PRs and means the same thing
+      wherever it is quoted. Metrics count merged PRs by the day they were merged.
+    model: ref('fct_pull_requests')
     defaults:
-      agg_time_dimension: metric_date
+      agg_time_dimension: merged_at
 
     entities:
-      - name: dora_metrics_daily
+      - name: pull_request
         type: primary
-        expr: metric_date
+        expr: pr_number
 
     dimensions:
-      - name: metric_date
+      - name: merged_at
         type: time
         type_params:
           time_granularity: day
+      - name: is_bot
+        type: categorical
+        description: True when the PR author is an automated account (login ends in "[bot]"). Filter on false for human-only figures.
+      - name: is_merged
+        type: categorical
 
     measures:
-      - name: deployment_count
-        description: Count of PRs merged on this day. Additive across days.
+      - name: merged_pr_count
+        description: Number of merged PRs. A merge is used as a proxy for a deployment.
         agg: sum
-        expr: deployment_frequency
+        expr: case when is_merged then 1 else 0 end
 
-      - name: avg_lead_time_hours_daily
-        description: >
-          Average of this mart's daily avg_lead_time_hours values — an average
-          of daily averages (each day weighted equally), not a PR-weighted
-          average across individual merges. A known limitation of building this
-          measure on a pre-aggregated mart rather than PR-grain data; see README.
+      - name: lead_time_median_hours
+        description: Median hours from PR opened to merged. The headline lead time, because PR lead times are heavily skewed by a few very slow PRs.
+        agg: median
+        expr: lead_time_hours
+
+      - name: lead_time_p90_hours
+        description: 90th percentile of hours from PR opened to merged (continuous, interpolated). 9 in 10 merged PRs were merged faster than this.
+        agg: percentile
+        expr: lead_time_hours
+        agg_params:
+          percentile: 0.9
+          use_discrete_percentile: false
+          use_approximate_percentile: false
+
+      - name: lead_time_mean_hours
+        description: Mean hours from PR opened to merged, with every PR counted once (PR-weighted). Pulled up by a few very slow PRs, so quote it next to the median.
         agg: average
-        expr: avg_lead_time_hours
+        expr: lead_time_hours
 
 metrics:
   - name: deployment_frequency
-    description: Total pull requests merged (used as a proxy for deployments) over the selected period.
+    description: Number of pull requests merged (a merge is used as a proxy for a deployment). Sum it over any period, or group by metric_time.
     label: Deployment Frequency
     type: simple
     type_params:
-      measure: deployment_count
+      measure: merged_pr_count
+    filter: |
+      {{ Dimension('pull_request__is_merged') }} = true
 
-  - name: lead_time_for_changes
-    description: >
-      Average hours between a PR opening and merging, over the selected period.
-      Computed as the average of mart_dora_metrics_daily's daily averages.
-    label: Lead Time for Changes (hrs)
+  - name: lead_time_median_hours
+    description: Median hours from PR opened to merged, over merged PRs. The headline Lead Time for Changes figure.
+    label: Lead Time for Changes, median (hrs)
     type: simple
     type_params:
-      measure: avg_lead_time_hours_daily
+      measure: lead_time_median_hours
+    filter: |
+      {{ Dimension('pull_request__is_merged') }} = true
+
+  - name: lead_time_p90_hours
+    description: 90th percentile hours from PR opened to merged, over merged PRs.
+    label: Lead Time for Changes, p90 (hrs)
+    type: simple
+    type_params:
+      measure: lead_time_p90_hours
+    filter: |
+      {{ Dimension('pull_request__is_merged') }} = true
+
+  - name: lead_time_mean_hours
+    description: PR-weighted mean hours from PR opened to merged, over merged PRs.
+    label: Lead Time for Changes, mean (hrs)
+    type: simple
+    type_params:
+      measure: lead_time_mean_hours
+    filter: |
+      {{ Dimension('pull_request__is_merged') }} = true
