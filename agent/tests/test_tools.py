@@ -37,7 +37,7 @@ def test_connection_itself_refuses_writes_and_file_access(statement):
 
 
 def test_query_timeout():
-    # 500^3 = 125M row cross join, cut off by a tiny timeout.
+    # 523^3 = 143M row cross join, cut off by a tiny timeout.
     heavy = (
         "SELECT count(*) FROM main.int_pr_lifecycle a, main.int_pr_lifecycle b, "
         "main.int_pr_lifecycle c WHERE a.lead_time_hours + b.lead_time_hours > c.review_count"
@@ -60,7 +60,7 @@ def test_run_readonly_sql_blocks_non_whitelisted_table():
 
 
 def test_run_readonly_sql_caps_rows_at_200():
-    result = tools.run_readonly_sql("SELECT pr_number FROM main.int_pr_lifecycle")  # 500 rows
+    result = tools.run_readonly_sql("SELECT pr_number FROM main.int_pr_lifecycle")  # 523 rows
     assert result["ok"] is True
     assert result["row_count"] == 200
     assert result["truncated"] is True
@@ -90,17 +90,21 @@ def test_get_schema_mart():
 
 def test_data_coverage():
     result = tools.get_data_coverage()
+    assert result["metrics_first_date"] == "2023-01-02"  # first merge in the 2023-01-01+ window
     assert result["metrics_last_date"] == "2026-02-23"
+    assert result["pull_requests_total"] == 523
+    assert result["pull_requests_merged"] == 288
     assert result["repos_available"] == ["encode/httpx"]
 
 
 def test_full_range_matches_mart_totals():
     result = tools.get_dora_metrics("2023-01-01", "2026-12-31")
-    assert result["deployment_frequency"]["merged_prs_total"] == 269
+    assert result["deployment_frequency"]["merged_prs_total"] == 288
     lead = result["lead_time_for_changes"]
-    assert lead["merged_prs_measured"] == 269  # mart and PR-grain table agree
-    assert lead["mean_hours_pr_weighted"] == 234.94
-    assert lead["dashboard_figure_hours_day_weighted"] == 258.24
+    assert lead["merged_prs_measured"] == 288  # mart and PR-grain table agree
+    assert lead["median_hours"] == 20.62
+    assert lead["mean_hours_pr_weighted"] == 235.64
+    assert lead["dashboard_figure_hours_day_weighted"] == 260.78
     assert result["change_failure_rate"]["available"] is False
     assert "coverage_note" in result  # requested range is wider than the data
 
@@ -123,9 +127,9 @@ def test_unknown_repo_returns_error_dict():
 
 def test_compare_periods_2023_vs_2024():
     result = tools.compare_periods("2023-01-01", "2023-12-31", "2024-01-01", "2024-12-31")
-    assert result["period_a"]["deployment_frequency"]["merged_prs_total"] == 130
+    assert result["period_a"]["deployment_frequency"]["merged_prs_total"] == 149
     assert result["period_b"]["deployment_frequency"]["merged_prs_total"] == 109
-    assert result["percent_change_a_to_b"]["merged_prs_total"] == round((109 - 130) / 130 * 100, 1)
+    assert result["percent_change_a_to_b"]["merged_prs_total"] == round((109 - 149) / 149 * 100, 1)
 
 
 # ---------- period phrases (resolved in code) ----------
@@ -153,7 +157,7 @@ def test_get_dora_metrics_unrecognised_period():
 
 def test_compare_periods_with_phrases():
     result = tools.compare_periods(period_a="2023", period_b="2024")
-    assert result["period_a"]["deployment_frequency"]["merged_prs_total"] == 130
+    assert result["period_a"]["deployment_frequency"]["merged_prs_total"] == 149
     assert result["period_b"]["resolved_period"]["label"] == "2024"
 
 
