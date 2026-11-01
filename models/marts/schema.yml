@@ -126,3 +126,73 @@ models:
         tests:
           - not_null
           - non_negative
+
+  - name: dim_date
+    description: >
+      Dimension table, one row per calendar day, for grouping and filtering charts by year,
+      quarter, month, week and weekday. Built from metricflow_time_spine (which is unchanged)
+      and trimmed to the years the data touches. Weeks start on Monday.
+    columns:
+      - name: date_day
+        description: The calendar day, as a DATE. Primary key of this model.
+        tests:
+          - unique
+          - not_null
+
+      - name: year
+        description: Calendar year.
+        tests:
+          - not_null
+
+      - name: quarter
+        description: Calendar quarter, 1 to 4 (Q1 is January to March).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4]
+                quote: false
+
+      - name: month_number
+        description: Month of the year, 1 to 12.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+                quote: false
+
+      - name: month_name
+        description: English month name, for example January.
+        tests:
+          - not_null
+
+      - name: month_start_date
+        description: First day of this day's month. Use as the axis value for monthly trends.
+        tests:
+          - not_null
+
+      - name: week_start_date
+        description: The Monday of this day's week. Use as the axis value for weekly trends.
+        tests:
+          - not_null
+
+      - name: day_of_week_number
+        description: ISO weekday number, 1 = Monday to 7 = Sunday.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7]
+                quote: false
+
+      - name: day_name
+        description: English day name, for example Monday.
+        tests:
+          - not_null
+
+      - name: is_weekend
+        description: True on Saturday and Sunday.
+        tests:
+          - not_null
+
