@@ -54,9 +54,13 @@ models:
           - not_null
 
       - name: author_login
-        description: GitHub login of the PR author.
+        description: GitHub login of the PR author. Joins to dim_contributors.contributor_login.
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_contributors')
+                field: contributor_login
 
       - name: is_bot
         description: True when the author login ends in "[bot]" (for example dependabot[bot]). Human-only metrics should filter on is_bot = false, because bot PRs are opened and merged on a different rhythm.
@@ -77,3 +81,48 @@ models:
         description: When the data was last pulled from GitHub (UTC), from _loaded_at. Same value on every row. Measure anything "as of now", such as how long a PR has been open, against this and not against today's date.
         tests:
           - not_null
+
+  - name: dim_contributors
+    description: >
+      Dimension table, one row per GitHub login that appears as a PR author or a reviewer
+      (or both). Carries a bot flag, first and last activity, and how many PRs the login
+      authored and how many reviews it gave.
+    columns:
+      - name: contributor_login
+        description: GitHub login. Primary key of this model.
+        tests:
+          - unique
+          - not_null
+
+      - name: is_bot
+        description: True when the login ends in "[bot]" (for example dependabot[bot] as an author, or copilot-pull-request-reviewer[bot] as a reviewer).
+        tests:
+          - not_null
+
+      - name: first_activity_at
+        description: Earliest time this login opened a PR or submitted a review.
+        tests:
+          - not_null
+
+      - name: last_activity_at
+        description: Latest time this login opened a PR or submitted a review.
+        tests:
+          - not_null
+
+      - name: prs_authored
+        description: Number of PRs this login opened (any state). 0 for reviewers who never opened one.
+        tests:
+          - not_null
+          - non_negative
+
+      - name: reviews_given
+        description: Number of reviews this login submitted, of any kind (approved, commented, changes requested or dismissed). Includes reviews on its own PRs. 0 for authors who never reviewed.
+        tests:
+          - not_null
+          - non_negative
+
+      - name: prs_reviewed
+        description: Number of distinct PRs this login reviewed.
+        tests:
+          - not_null
+          - non_negative
