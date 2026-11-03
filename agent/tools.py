@@ -55,9 +55,10 @@ CFR_NOT_AVAILABLE = {
 
 DEPLOYMENT_DEFINITION = "A merged pull request is used as a proxy for a deployment."
 LEAD_TIME_DEFINITION = "Hours from a pull request being opened to being merged."
-DASHBOARD_FIGURE_NOTE = (
-    "The dashboard figure averages the daily averages, so every day counts equally "
-    "regardless of how many PRs merged that day; median and PR-weighted mean count every PR once."
+LEAD_TIME_NOTE = (
+    "Median is the headline figure: PR lead times are heavily skewed by a few very slow PRs, "
+    "which pull the mean far above the median. p90 means 9 in 10 merged PRs were merged faster "
+    "than that. Every figure counts each merged PR once."
 )
 
 
@@ -112,8 +113,12 @@ def _resolve_dates(start: str | None, end: str | None, period: str | None, prefi
     return start, end, None
 
 
-def _metrics_for_period(start: str, end: str) -> dict:
-    """Compute the DORA metrics for one validated date range (inclusive)."""
+def _metrics_for_period(start: str, end: str, include_bots: bool = True) -> dict:
+    """Compute the DORA metrics for one validated date range (inclusive).
+
+    Every figure comes from fct_pull_requests, the same table and the same definitions
+    as the MetricFlow metrics, so the agent and `mf query` give identical numbers.
+    """
     coverage = periods.data_coverage()
     # ISO date strings compare correctly as text, so no date parsing is needed here.
     overlap_start = max(start, coverage["min"])
@@ -121,6 +126,7 @@ def _metrics_for_period(start: str, end: str) -> dict:
 
     result = {
         "period": {"start_date": start, "end_date": end},
+        "includes_bot_prs": include_bots,
         "data_coverage": coverage,
     }
     if overlap_start > overlap_end:
@@ -131,33 +137,25 @@ def _metrics_for_period(start: str, end: str) -> dict:
         )
         return result
 
-    # Deployment frequency comes straight from the mart, the same source as the dashboard.
+    # Fixed strings chosen by a bool, never built from user text.
+    counted = "true" if include_bots else "not is_bot"
     _, rows, _ = db.run_query(
-        """
+        f"""
         select
-            sum(deployment_frequency),
-            count(*),
-            avg(avg_lead_time_hours)
-        from main.mart_dora_metrics_daily
-        where cast(metric_date as date) between ? and ?
-        """,
-        [start, end],
-    )
-    merged_total, days_covered, dashboard_lead_time = rows[0]
-
-    # Median and PR-weighted mean need one row per PR, which only int_pr_lifecycle has.
-    _, rows, _ = db.run_query(
-        """
-        select
-            count(*),
-            median(lead_time_hours),
-            avg(lead_time_hours)
-        from main.int_pr_lifecycle
+            count(*) filter (where {counted}),
+            median(lead_time_hours) filter (where {counted}),
+            quantile_cont(lead_time_hours, 0.9) filter (where {counted}),
+            avg(lead_time_hours) filter (where {counted}),
+            count(*) filter (where is_bot)
+        from main.fct_pull_requests
         where is_merged and cast(merged_at as date) between ? and ?
         """,
         [start, end],
     )
-    prs_measured, median_lead_time, mean_lead_time = rows[0]
+    merged_total, median_lead_time, p90_lead_time, mean_lead_time, bot_merged = rows[0]
+
+    # Days of the period that fall inside the data (first to last merge, no gaps).
+    days_covered = _days_between(overlap_start, overlap_end)
 
     result["has_data"] = True
     result["days_with_data_in_period"] = days_covered
@@ -169,15 +167,16 @@ def _metrics_for_period(start: str, end: str) -> dict:
     result["deployment_frequency"] = {
         "merged_prs_total": merged_total,
         "merged_prs_per_week": _round(merged_total / days_covered * 7),
+        "bot_merged_prs_in_period": bot_merged,
         "definition": DEPLOYMENT_DEFINITION,
     }
     result["lead_time_for_changes"] = {
         "median_hours": _round(median_lead_time),
+        "p90_hours": _round(p90_lead_time),
         "mean_hours_pr_weighted": _round(mean_lead_time),
-        "dashboard_figure_hours_day_weighted": _round(dashboard_lead_time),
-        "merged_prs_measured": prs_measured,
+        "merged_prs_measured": merged_total,
         "definition": LEAD_TIME_DEFINITION,
-        "note": DASHBOARD_FIGURE_NOTE,
+        "note": LEAD_TIME_NOTE,
     }
     result["change_failure_rate"] = CFR_NOT_AVAILABLE
     return result
@@ -251,11 +250,13 @@ def get_data_coverage() -> dict:
             count(*),
             count(*) filter (where is_merged),
             cast(min(opened_at) as date),
-            cast(max(opened_at) as date)
-        from main.int_pr_lifecycle
+            cast(max(opened_at) as date),
+            max(data_as_of),
+            count(*) filter (where is_bot)
+        from main.fct_pull_requests
         """
     )
-    total_prs, merged_prs, first_opened, last_opened = rows[0]
+    total_prs, merged_prs, first_opened, last_opened, data_as_of, bot_prs = rows[0]
     return {
         "ok": True,
         "repo": ALLOWED_REPO,
@@ -267,6 +268,12 @@ def get_data_coverage() -> dict:
         "pull_requests_merged": merged_prs,
         "pull_requests_first_opened": first_opened,
         "pull_requests_last_opened": last_opened,
+        "bot_pull_requests": bot_prs,
+        "data_as_of": data_as_of,
+        "data_as_of_note": (
+            "When the data was last pulled from GitHub. Open/closed status and every 'currently' "
+            "figure are as of this moment, not today."
+        ),
         "metrics_available": ["deployment_frequency", "lead_time_for_changes"],
         "metrics_not_available": {"change_failure_rate": CFR_NOT_AVAILABLE["reason"]},
     }
@@ -292,6 +299,7 @@ def get_dora_metrics(
     end_date: str | None = None,
     repo: str | None = None,
     period: str | None = None,
+    include_bots: bool = True,
 ) -> dict:
     """Get the DORA metrics for one period: EITHER a time phrase in `period`
     (e.g. "last quarter", "Q1 2025", "this year"), resolved to dates in code,
@@ -301,21 +309,25 @@ def get_dora_metrics(
     as `period`; do not compute the dates yourself.
 
     Returns deployment frequency (merged PRs total and per week) and lead time for
-    changes (median hours as the headline figure, PR-weighted mean, and the dashboard's
-    day-weighted average). Change failure rate is reported as not available.
+    changes (median hours as the headline figure, 90th percentile, and PR-weighted mean).
+    Change failure rate is reported as not available.
+
+    By default every merged PR is counted, including automated bot PRs such as dependabot.
+    Pass include_bots=false for human-authored PRs only. Say which one you used.
 
     Args:
         start_date: First day of the period, format YYYY-MM-DD. Omit when using `period`.
         end_date: Last day of the period, format YYYY-MM-DD. Omit when using `period`.
         repo: Optional repository "owner/name". Only "encode/httpx" has data.
         period: A time phrase as the user said it, e.g. "last quarter". Omit when using dates.
+        include_bots: True (default) counts all merged PRs; false counts only human-authored PRs.
     """
     repo_name = validate_repo(repo)
     start, end, resolved = _resolve_dates(start_date, end_date, period)
     result = {"ok": True, "repo": repo_name}
     if resolved:
         result["resolved_period"] = resolved
-    return {**result, **_metrics_for_period(start, end)}
+    return {**result, **_metrics_for_period(start, end, include_bots)}
 
 
 @safe_tool
@@ -327,6 +339,7 @@ def compare_periods(
     repo: str | None = None,
     period_a: str | None = None,
     period_b: str | None = None,
+    include_bots: bool = True,
 ) -> dict:
     """Compare DORA metrics between two periods, with the percent change from A to B.
 
@@ -347,13 +360,14 @@ def compare_periods(
         repo: Optional repository "owner/name". Only "encode/httpx" has data.
         period_a: Time phrase for period A, e.g. "last year". Omit when using dates.
         period_b: Time phrase for period B, e.g. "this year". Omit when using dates.
+        include_bots: True (default) counts all merged PRs in both periods; false counts only human-authored PRs.
     """
     repo_name = validate_repo(repo)
     a_start, a_end, a_resolved = _resolve_dates(period_a_start, period_a_end, period_a, prefix="period_a_")
     b_start, b_end, b_resolved = _resolve_dates(period_b_start, period_b_end, period_b, prefix="period_b_")
 
-    a = _metrics_for_period(a_start, a_end)
-    b = _metrics_for_period(b_start, b_end)
+    a = _metrics_for_period(a_start, a_end, include_bots)
+    b = _metrics_for_period(b_start, b_end, include_bots)
     if a_resolved:
         a["resolved_period"] = a_resolved
     if b_resolved:
@@ -371,6 +385,7 @@ def compare_periods(
         "merged_prs_total": _pct_change(a_dep["merged_prs_total"], b_dep["merged_prs_total"]),
         "merged_prs_per_week": _pct_change(a_dep["merged_prs_per_week"], b_dep["merged_prs_per_week"]),
         "lead_time_median_hours": _pct_change(a_lt["median_hours"], b_lt["median_hours"]),
+        "lead_time_p90_hours": _pct_change(a_lt["p90_hours"], b_lt["p90_hours"]),
         "lead_time_mean_hours_pr_weighted": _pct_change(
             a_lt["mean_hours_pr_weighted"], b_lt["mean_hours_pr_weighted"]
         ),

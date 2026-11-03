@@ -123,8 +123,10 @@ def test_full_range_matches_mart_totals():
     lead = result["lead_time_for_changes"]
     assert lead["merged_prs_measured"] == 288  # mart and PR-grain table agree
     assert lead["median_hours"] == 20.62
+    assert lead["p90_hours"] == 483.04
     assert lead["mean_hours_pr_weighted"] == 235.64
-    assert lead["dashboard_figure_hours_day_weighted"] == 260.78
+    # the average-of-daily-averages figure was removed and must not come back
+    assert not any("day_weighted" in key or "dashboard" in key for key in lead)
     assert result["change_failure_rate"]["available"] is False
     assert "coverage_note" in result  # requested range is wider than the data
 
@@ -185,3 +187,111 @@ def test_compare_periods_rejects_both_for_one_side():
     result = tools.compare_periods(period_a="2023", period_a_start="2023-01-01", period_a_end="2023-12-31",
                                    period_b="2024")
     assert result["ok"] is False and "period_a_" in result["error"]
+
+
+# ---------- numbers come from fct_pull_requests and match an independent calculation ----------
+
+def raw_merged_lead_times(where: str = "true", params: list | None = None) -> list[float]:
+    """Lead times in hours for merged PRs, straight from the RAW tables (not dbt models)."""
+    _, rows, _ = db.run_query(
+        f"""
+        select (epoch(cast(merged_at as timestamp)) - epoch(cast(created_at as timestamp))) / 3600.0
+        from raw.github_pull_requests
+        where merged_at is not null and {where}
+        """,
+        params,
+    )
+    return [r[0] for r in rows]
+
+
+def raw_stats(hours: list[float]) -> dict:
+    import statistics
+    ordered = sorted(hours)
+    position = 0.9 * (len(ordered) - 1)  # linear interpolation, same as PERCENTILE_CONT(0.9)
+    low = int(position)
+    p90 = ordered[low] + (ordered[min(low + 1, len(ordered) - 1)] - ordered[low]) * (position - low)
+    return {"n": len(ordered), "median": statistics.median(ordered), "p90": p90, "mean": statistics.fmean(ordered)}
+
+
+@pytest.mark.parametrize("include_bots", [True, False])
+def test_2024_metrics_match_independent_calculation_from_raw_tables(include_bots):
+    where = "merged_at >= '2024-01-01' and merged_at < '2025-01-01'"
+    if not include_bots:
+        where += " and author not like '%[bot]'"
+    expected = raw_stats(raw_merged_lead_times(where))
+
+    result = tools.get_dora_metrics("2024-01-01", "2024-12-31", include_bots=include_bots)
+    lead = result["lead_time_for_changes"]
+    assert result["includes_bot_prs"] is include_bots
+    assert result["deployment_frequency"]["merged_prs_total"] == expected["n"]
+    assert lead["merged_prs_measured"] == expected["n"]
+    # the dbt model rounds each PR's lead time to 2 decimals, hence the small tolerance
+    assert lead["median_hours"] == pytest.approx(expected["median"], abs=0.01)
+    assert lead["p90_hours"] == pytest.approx(expected["p90"], abs=0.01)
+    assert lead["mean_hours_pr_weighted"] == pytest.approx(expected["mean"], abs=0.01)
+
+
+def test_2024_values_equal_the_metricflow_query_results():
+    # The same numbers `mf query --metrics deployment_frequency,lead_time_median_hours,
+    # lead_time_p90_hours,lead_time_mean_hours --group-by metric_time__year` printed for 2024.
+    result = tools.get_dora_metrics(period="2024")
+    lead = result["lead_time_for_changes"]
+    assert result["deployment_frequency"]["merged_prs_total"] == 109
+    assert (lead["median_hours"], lead["p90_hours"], lead["mean_hours_pr_weighted"]) == (23.91, 495.83, 284.87)
+
+    humans = tools.get_dora_metrics(period="2024", include_bots=False)
+    lead = humans["lead_time_for_changes"]
+    assert humans["deployment_frequency"]["merged_prs_total"] == 92
+    assert (lead["median_hours"], lead["p90_hours"], lead["mean_hours_pr_weighted"]) == (23.18, 697.91, 331.35)
+
+
+def test_bot_filter_splits_the_total_and_reports_how_many_bot_prs_there_are():
+    everyone = tools.get_dora_metrics("2024-01-01", "2024-12-31")["deployment_frequency"]
+    humans = tools.get_dora_metrics("2024-01-01", "2024-12-31", include_bots=False)["deployment_frequency"]
+    assert everyone["bot_merged_prs_in_period"] == humans["bot_merged_prs_in_period"] == 17
+    assert everyone["merged_prs_total"] - humans["merged_prs_total"] == 17
+
+
+def test_humans_only_headline_differs_from_all_prs():
+    # Why the filter exists: fast bot merges pull the all-PR median down in 2023.
+    all_prs = tools.get_dora_metrics(period="2023")["lead_time_for_changes"]["median_hours"]
+    humans = tools.get_dora_metrics(period="2023", include_bots=False)["lead_time_for_changes"]["median_hours"]
+    assert (all_prs, humans) == (20.47, 29.4)
+
+
+def test_period_after_the_last_merge_has_no_data_and_does_not_crash():
+    quiet = tools.get_dora_metrics("2026-03-01", "2026-03-31")  # data ends 2026-02-23
+    assert quiet["ok"] is True and quiet["has_data"] is False
+
+
+def test_period_inside_the_data_with_zero_merges_gives_zero_and_no_lead_time():
+    result = tools.get_dora_metrics("2025-12-01", "2025-12-03")  # three days, no merges
+    assert result["ok"] is True and result["has_data"] is True
+    assert result["deployment_frequency"]["merged_prs_total"] == 0
+    assert result["deployment_frequency"]["merged_prs_per_week"] == 0
+    lead = result["lead_time_for_changes"]
+    assert lead["merged_prs_measured"] == 0
+    assert lead["median_hours"] is None and lead["p90_hours"] is None and lead["mean_hours_pr_weighted"] is None
+
+
+def test_compare_periods_includes_p90_change_and_respects_bot_filter():
+    result = tools.compare_periods(period_a="2023", period_b="2024", include_bots=False)
+    assert result["period_a"]["includes_bot_prs"] is False
+    assert result["period_a"]["deployment_frequency"]["merged_prs_total"] == 88
+    assert result["period_b"]["deployment_frequency"]["merged_prs_total"] == 92
+    a_p90 = result["period_a"]["lead_time_for_changes"]["p90_hours"]
+    b_p90 = result["period_b"]["lead_time_for_changes"]["p90_hours"]
+    assert result["percent_change_a_to_b"]["lead_time_p90_hours"] == round((b_p90 - a_p90) / a_p90 * 100, 1)
+
+
+def test_include_bots_must_be_a_boolean():
+    from agent.agent import execute_tool
+    result = execute_tool("get_dora_metrics", {"period": "2024", "include_bots": "yes"}, tools.TOOLS)
+    assert result["ok"] is False and "include_bots" in result["error"]
+
+
+def test_data_coverage_reports_data_as_of_and_bot_count():
+    result = tools.get_data_coverage()
+    assert result["data_as_of"].startswith("2026-11-01T18:34")
+    assert result["bot_pull_requests"] == 104
+    assert "not today" in result["data_as_of_note"]
