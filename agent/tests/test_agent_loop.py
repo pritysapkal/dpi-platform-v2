@@ -3,6 +3,7 @@
 Run from dpi_project/:  python -m pytest agent/tests -v
 """
 
+import datetime
 import json
 
 import httpx
@@ -430,3 +431,24 @@ def test_date_check_inactive_without_relative_phrase(tracer):
     ])
     run_agent("How many PRs were merged in 2024?", model, tracer, tools=PERIOD_TOOLS, today=OCT_6)
     assert function_responses(model.received[1])[0]["data"]["ok"] is True
+
+
+# ---------- system prompt: p90, bot PRs, data_as_of ----------
+
+def test_system_prompt_tells_the_model_how_to_report_lead_time_and_bots():
+    prompt = agent.build_system_instruction(datetime.date(2026, 11, 3))
+    assert "Today's date is 2026-11-03" in prompt  # the template still formats cleanly
+    assert "median as the headline" in prompt and "90th" in prompt and "p90" in prompt
+    assert "Never average daily averages" in prompt
+    assert "include_bots=false" in prompt and "whether bot PRs are included" in prompt
+    assert "data_as_of" in prompt and "not today" in prompt
+
+
+def test_metric_tools_expose_include_bots_to_the_model_as_an_optional_boolean():
+    from agent.llm import build_tool_declarations
+    declarations = {d.name: d for d in build_tool_declarations(list(tools.TOOLS.values()))[0].function_declarations}
+    for name in ("get_dora_metrics", "compare_periods"):
+        parameters = declarations[name].parameters
+        assert "include_bots" in parameters.properties
+        assert str(parameters.properties["include_bots"].type).lower().endswith("boolean")
+        assert "include_bots" not in (parameters.required or [])
