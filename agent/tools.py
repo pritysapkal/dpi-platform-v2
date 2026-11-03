@@ -23,14 +23,25 @@ from agent.guardrails import (
 
 # Descriptions taken from the dbt schema.yml files, so the model knows what each table is.
 TABLE_DESCRIPTIONS = {
+    "fct_pull_requests": (
+        "PREFERRED for any question about individual pull requests. One row per pull request "
+        "(open, merged, or closed) with author_login, is_bot (automated accounts such as "
+        "dependabot), opened_at, merged_at, lead_time_hours (open to merge, null if not merged), "
+        "review_wait_hours (open to first review), time_in_review_hours (first review to merge), "
+        "was_reviewed_before_merge, review_count, was_approved, pr_lifecycle_stage, and "
+        "data_as_of (when the data was last pulled from GitHub)."
+    ),
     "mart_dora_metrics_daily": (
         "One row per calendar day (no gaps) with deployment_frequency (PRs merged that day, "
-        "0 on no-merge days) and avg_lead_time_hours (average open-to-merge hours for that "
-        "day's merges, null on no-merge days)."
+        "0 on no-merge days) and avg_lead_time_hours. Use it only for per-day merge counts. "
+        "Do NOT use avg_lead_time_hours for lead time: averaging it gives an average of daily "
+        "averages that weights every day equally and is dominated by a few slow PRs. For lead "
+        "time use the median or percentiles of lead_time_hours in fct_pull_requests."
     ),
     "int_pr_lifecycle": (
-        "One row per pull request (open, merged, or closed) with its opened -> reviewed -> "
-        "merged timeline, review counts, author, and lead_time_hours (open to merge)."
+        "Same pull requests as fct_pull_requests (one row per PR, with its opened -> reviewed -> "
+        "merged timeline) but without is_bot, was_reviewed_before_merge and data_as_of. "
+        "Prefer fct_pull_requests."
     ),
 }
 
@@ -373,9 +384,10 @@ def run_readonly_sql(query: str) -> dict:
     (e.g. per-author counts, review statistics, monthly breakdowns).
 
     Rules, enforced in code: one SELECT or WITH statement only; only the tables
-    main.mart_dora_metrics_daily and main.int_pr_lifecycle; no table functions; CTE
-    names must not reuse real table names; at most 200 rows are returned; 10 second
-    time limit. Uses DuckDB SQL syntax.
+    main.fct_pull_requests (preferred for pull-request questions),
+    main.mart_dora_metrics_daily and main.int_pr_lifecycle; no table functions;
+    CTE names must not reuse real table names; at most 200 rows are returned;
+    10 second time limit. Uses DuckDB SQL syntax.
 
     Args:
         query: A single DuckDB SELECT statement.

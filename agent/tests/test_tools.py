@@ -75,7 +75,27 @@ def test_run_readonly_sql_bad_column_returns_error_dict():
 
 def test_list_tables_only_whitelisted():
     names = {t["name"] for t in tools.list_tables()["tables"]}
-    assert names == {"main.mart_dora_metrics_daily", "main.int_pr_lifecycle"}
+    assert names == {"main.mart_dora_metrics_daily", "main.int_pr_lifecycle", "main.fct_pull_requests"}
+
+
+def test_every_listed_table_has_a_description_and_the_mart_warns_about_average_lead_time():
+    tables = {t["name"]: t["description"] for t in tools.list_tables()["tables"]}
+    assert all(tables.values())
+    assert "Do NOT use avg_lead_time_hours" in tables["main.mart_dora_metrics_daily"]
+    assert "PREFERRED" in tables["main.fct_pull_requests"]
+
+
+def test_get_schema_fact_table():
+    result = tools.get_schema("main.fct_pull_requests")
+    cols = {c["name"] for c in result["columns"]}
+    assert {"pr_number", "is_bot", "lead_time_hours", "was_reviewed_before_merge", "data_as_of"} <= cols
+
+
+def test_run_readonly_sql_on_fact_table_works_and_dimensions_are_blocked():
+    ok = tools.run_readonly_sql("select count(*), count(*) filter (where is_merged) from main.fct_pull_requests")
+    assert ok["ok"] is True and ok["rows"] == [[523, 288]]
+    blocked = tools.run_readonly_sql("select * from main.dim_contributors")
+    assert blocked["ok"] is False and "not allowed" in blocked["error"]
 
 
 def test_get_schema_rejects_raw_table():

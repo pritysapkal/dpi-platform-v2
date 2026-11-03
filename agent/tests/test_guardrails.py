@@ -6,6 +6,7 @@ Run from dpi_project/:  python -m pytest agent/tests -v
 import pytest
 
 from agent.guardrails import (
+    ALLOWED_TABLES,
     GuardrailError,
     validate_date,
     validate_date_range,
@@ -18,6 +19,9 @@ from agent.guardrails import (
 EXISTING_OBJECTS = {
     "mart_dora_metrics_daily",
     "int_pr_lifecycle",
+    "fct_pull_requests",
+    "dim_contributors",
+    "dim_date",
     "stg_github__pull_requests",
     "stg_github__pr_reviews",
     "github_pull_requests",
@@ -174,6 +178,10 @@ def test_cte_shadowing_real_table_blocked(query):
         "SELECT m.metric_date, i.pr_number FROM main.mart_dora_metrics_daily m "
         "JOIN main.int_pr_lifecycle i ON cast(i.merged_at AS date) = cast(m.metric_date AS date)",
         "SELECT median(lead_time_hours) OVER (ORDER BY merged_at) FROM main.int_pr_lifecycle",
+        "SELECT count(*) FROM main.fct_pull_requests WHERE is_merged AND NOT is_bot",
+        "SELECT quantile_cont(lead_time_hours, 0.9) FROM fct_pull_requests",
+        "SELECT * FROM dev.main.fct_pull_requests f JOIN main.mart_dora_metrics_daily m "
+        "ON cast(f.merged_at AS date) = cast(m.metric_date AS date)",
     ],
 )
 def test_valid_select_passes(query):
@@ -241,12 +249,40 @@ def test_unknown_repo_rejected():
         validate_repo("facebook/react")
 
 
-@pytest.mark.parametrize("name", ["mart_dora_metrics_daily", "main.int_pr_lifecycle", " INT_PR_LIFECYCLE "])
+@pytest.mark.parametrize(
+    "name", ["mart_dora_metrics_daily", "main.int_pr_lifecycle", " INT_PR_LIFECYCLE ", "fct_pull_requests", "main.FCT_PULL_REQUESTS"]
+)
 def test_allowed_table_name_accepted(name):
     validate_table_name(name)
 
 
-@pytest.mark.parametrize("name", ["raw.github_pull_requests", "stg_github__pull_requests", "", "x; drop"])
+@pytest.mark.parametrize(
+    "name",
+    ["raw.github_pull_requests", "stg_github__pull_requests", "dim_contributors", "dim_date", "", "x; drop"],
+)
 def test_disallowed_table_name_rejected(name):
     with pytest.raises(GuardrailError):
         validate_table_name(name)
+
+
+# ---------- the fact table is whitelisted, the dimensions and others are not ----------
+
+def test_fact_table_is_whitelisted_and_dimensions_are_not():
+    assert "fct_pull_requests" in ALLOWED_TABLES
+    assert "dim_contributors" not in ALLOWED_TABLES and "dim_date" not in ALLOWED_TABLES
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "SELECT * FROM main.dim_contributors",
+        "SELECT * FROM main.dim_date",
+        "SELECT f.pr_number FROM main.fct_pull_requests f JOIN main.dim_contributors d ON f.author_login = d.contributor_login",
+        "DELETE FROM main.fct_pull_requests",
+        "UPDATE main.fct_pull_requests SET is_bot = false",
+        # a CTE named like the fact table would read the real one inside its own body
+        "WITH fct_pull_requests AS (SELECT * FROM fct_pull_requests) SELECT * FROM fct_pull_requests",
+    ],
+)
+def test_fact_table_cannot_be_used_to_reach_other_tables_or_write(query):
+    assert_blocked(query)

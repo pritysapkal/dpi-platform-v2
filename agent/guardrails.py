@@ -14,8 +14,9 @@ import re
 
 import duckdb
 
-# Only the dbt outputs meant for consumption. raw.*, staging and the time spine stay hidden.
-ALLOWED_TABLES = frozenset({"mart_dora_metrics_daily", "int_pr_lifecycle"})
+# Only the dbt outputs meant for consumption. raw.*, staging, the time spine and the
+# dim_* tables stay hidden.
+ALLOWED_TABLES = frozenset({"mart_dora_metrics_daily", "int_pr_lifecycle", "fct_pull_requests"})
 ALLOWED_SCHEMAS = frozenset({"", "main"})
 ALLOWED_CATALOGS = frozenset({"", "dev"})  # "dev" is the database name of dev.duckdb
 
