@@ -397,3 +397,86 @@ def test_open_pr_age_with_no_open_prs_is_empty_not_an_error():
     assert o["open_prs"] == 0 and o["median_age_days"] is None and o["oldest_age_days"] is None
     assert o["never_reviewed"] == 0 and len(o["oldest"]) == 0
     assert all(n == 0 for _, n in o["age_buckets"])
+
+
+# ---------- top reviewers and authors ----------
+
+QUIET = (datetime.date(2026, 3, 30), datetime.date(2026, 8, 28))  # no reviews and no PRs opened
+
+RAW_REVIEWERS_SQL = """
+select r.reviewer_login, count(distinct r.pr_number), count(*), count(*) filter (where r.review_state = 'APPROVED')
+from raw.github_pr_reviews r
+join raw.github_pull_requests p on p.number = r.pr_number
+where r.reviewer_login not like '%[bot]'
+  and r.reviewer_login <> p.author
+  and cast(cast(r.submitted_at as timestamp) as date) between ? and ?
+group by 1
+order by 2 desc, 3 desc, 1
+limit 10
+"""
+
+RAW_OWN_COMMENTS_SQL = """
+select count(*)
+from raw.github_pr_reviews r
+join raw.github_pull_requests p on p.number = r.pr_number
+where r.reviewer_login not like '%[bot]' and r.reviewer_login = p.author
+  and cast(cast(r.submitted_at as timestamp) as date) between ? and ?
+"""
+
+RAW_AUTHORS_SQL = """
+select author, count(*), count(*) filter (where merged_at is not null), count(*) filter (where state = 'open')
+from raw.github_pull_requests
+where author not like '%[bot]' and cast(cast(created_at as timestamp) as date) between ? and ?
+group by 1
+order by 2 desc, 3 desc, 1
+limit 10
+"""
+
+
+def raw_rows(sql, window):
+    con = duckdb.connect(str(queries.DB_PATH), read_only=True)
+    try:
+        return [tuple(r) for r in con.execute(sql, list(window)).fetchall()]
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize("window", [FULL, Y2023, Y2024], ids=["full", "2023", "2024"])
+def test_top_reviewers_match_independent_calculation_from_raw_tables(window):
+    got = queries.top_reviewers(*window)
+    assert [tuple(r) for r in got["reviewers"].itertuples(index=False)] == raw_rows(RAW_REVIEWERS_SQL, window)
+    assert got["own_pr_comments_left_out"] == raw_rows(RAW_OWN_COMMENTS_SQL, window)[0][0]
+
+
+@pytest.mark.parametrize("window", [FULL, Y2023, Y2024], ids=["full", "2023", "2024"])
+def test_top_authors_match_independent_calculation_from_raw_tables(window):
+    got = queries.top_authors(*window)
+    assert [tuple(r) for r in got.itertuples(index=False)] == raw_rows(RAW_AUTHORS_SQL, window)
+
+
+def test_reviewers_and_authors_are_people_only():
+    names = set(queries.top_reviewers(*FULL, limit=500)["reviewers"]["reviewer"]) | set(queries.top_authors(*FULL, limit=500)["author"])
+    assert not any(n.endswith("[bot]") for n in names)
+
+
+def test_self_comments_are_left_out_and_reviews_are_ranked_by_distinct_prs():
+    got = queries.top_reviewers(*FULL)
+    top = got["reviewers"].set_index("reviewer")
+    assert got["own_pr_comments_left_out"] == 188
+    assert top.loc["lovelydinosaur", "prs_reviewed"] == 158 and top.loc["lovelydinosaur", "reviews"] == 271  # not 320
+    # T-256 has as many reviews as Kludex but reviewed far fewer different PRs, so ranks lower
+    assert top.loc["T-256", "reviews"] == top.loc["Kludex", "reviews"] == 67
+    order = got["reviewers"]["reviewer"].tolist()
+    assert order.index("Kludex") < order.index("T-256")
+
+
+def test_top_lists_are_limited_and_sorted():
+    r = queries.top_reviewers(*FULL, limit=3)["reviewers"]
+    assert len(r) == 3 and r["prs_reviewed"].is_monotonic_decreasing
+    assert len(queries.top_authors(*FULL)) == 10
+
+
+def test_quiet_window_gives_empty_lists_not_errors():
+    r = queries.top_reviewers(*QUIET)
+    assert r["reviewers"].empty and r["own_pr_comments_left_out"] == 0
+    assert queries.top_authors(*QUIET).empty

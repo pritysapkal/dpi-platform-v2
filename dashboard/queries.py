@@ -238,6 +238,73 @@ def open_pr_age(start: datetime.date, end: datetime.date, include_bots: bool) ->
     }
 
 
+TOP_N = 10
+
+
+def top_reviewers(start: datetime.date, end: datetime.date, limit: int = TOP_N) -> dict:
+    """Who reviews the most, among reviews submitted in [start, end]. People only (no bots).
+
+    Ranked by distinct PRs reviewed, not by number of reviews: several comments on one PR
+    are one piece of work. A review on your own PR (an author replying in their own thread,
+    always a plain comment in this data) is not a review of someone else's work and is left
+    out; `own_pr_comments_left_out` says how many. Reviews of bot-authored PRs (such as
+    dependabot) do count, since a person still looked at them.
+    """
+    df = run_df(
+        """
+        select
+            r.reviewer_login as reviewer,
+            count(distinct r.pr_number) as prs_reviewed,
+            count(*) as reviews,
+            count(*) filter (where r.review_state = 'APPROVED') as approvals
+        from main.stg_github__pr_reviews r
+        join main.fct_pull_requests p on p.pr_number = r.pr_number
+        join main.dim_contributors d on d.contributor_login = r.reviewer_login
+        where not d.is_bot
+          and r.reviewer_login <> p.author_login
+          and cast(r.submitted_at as date) between ? and ?
+        group by 1
+        order by prs_reviewed desc, reviews desc, reviewer
+        limit ?
+        """,
+        [start, end, limit],
+    )
+    (left_out,), = run(
+        """
+        select count(*)
+        from main.stg_github__pr_reviews r
+        join main.fct_pull_requests p on p.pr_number = r.pr_number
+        join main.dim_contributors d on d.contributor_login = r.reviewer_login
+        where not d.is_bot
+          and r.reviewer_login = p.author_login
+          and cast(r.submitted_at as date) between ? and ?
+        """,
+        [start, end],
+    )
+    return {"reviewers": df, "own_pr_comments_left_out": left_out}
+
+
+def top_authors(start: datetime.date, end: datetime.date, limit: int = TOP_N):
+    """Who opens the most PRs, among PRs opened in [start, end]. People only (no bots)."""
+    return run_df(
+        """
+        select
+            p.author_login as author,
+            count(*) as prs_opened,
+            count(*) filter (where p.is_merged) as prs_merged,
+            count(*) filter (where p.pr_lifecycle_stage = 'open') as still_open
+        from main.fct_pull_requests p
+        join main.dim_contributors d on d.contributor_login = p.author_login
+        where not d.is_bot
+          and cast(p.opened_at as date) between ? and ?
+        group by 1
+        order by prs_opened desc, prs_merged desc, author
+        limit ?
+        """,
+        [start, end, limit],
+    )
+
+
 def kpis(start: datetime.date, end: datetime.date, include_bots: bool) -> dict:
     """The headline figures for merged PRs in [start, end]. Missing values are None, never 0."""
     (merged, median_lead, p90_lead, reviewed, median_wait), = run(

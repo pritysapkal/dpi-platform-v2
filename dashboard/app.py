@@ -35,6 +35,16 @@ def load_open_prs(start, end, include_bots):
     return queries.open_pr_age(start, end, include_bots)
 
 
+@st.cache_data(ttl=60)
+def load_reviewers(start, end):
+    return queries.top_reviewers(start, end)
+
+
+@st.cache_data(ttl=60)
+def load_authors(start, end):
+    return queries.top_authors(start, end)
+
+
 def hours(value, digits=1):
     return "–" if value is None else f"{value:,.{digits}f} h"
 
@@ -281,3 +291,41 @@ else:
             f"The {len(oldest)} oldest open PRs. These are the best candidates to merge, or to close if they are "
             "no longer wanted."
         )
+
+st.divider()
+
+st.subheader("Who reviews and who writes")
+st.caption(
+    "People only, whatever the bot checkbox says: automated accounts are left out, both as authors and as "
+    "reviewers. Reviews are counted by the day they were submitted, PRs by the day they were opened."
+)
+rv = load_reviewers(start, end)
+reviewers = rv["reviewers"]
+authors = load_authors(start, end)
+
+col_rev, col_auth = st.columns(2)
+with col_rev:
+    st.markdown("**Top reviewers: other people's PRs reviewed**")
+    if reviewers.empty:
+        st.info("Nobody reviewed anyone else's PR in this date range.")
+    else:
+        st.bar_chart(reviewers, x="reviewer", y="prs_reviewed", horizontal=True, sort=False, x_label="", y_label="PRs reviewed")
+        st.dataframe(reviewers.rename(columns={"prs_reviewed": "PRs reviewed", "reviews": "Reviews", "approvals": "Approvals"}),
+                     hide_index=True, width="stretch")
+    st.caption(
+        "Ranked by how many different PRs someone reviewed, since several comments on one PR are one piece of work. "
+        f"{rv['own_pr_comments_left_out']:,} comments that authors left on their own PRs are not counted. Good looks "
+        "like the review work being spread over several people: if one name dominates, reviews stop when that person is away."
+    )
+with col_auth:
+    st.markdown("**Top authors: PRs opened**")
+    if authors.empty:
+        st.info("No PRs were opened by people in this date range.")
+    else:
+        st.bar_chart(authors, x="author", y="prs_opened", horizontal=True, sort=False, x_label="", y_label="PRs opened")
+        st.dataframe(authors.rename(columns={"prs_opened": "PRs opened", "prs_merged": "Merged", "still_open": "Still open"}),
+                     hide_index=True, width="stretch")
+    st.caption(
+        "Who opens the most PRs, and how many of them were merged or are still open. Good looks like contributions "
+        "from several people, with most PRs ending up merged rather than abandoned."
+    )

@@ -98,11 +98,12 @@ def test_trend_section_has_a_bar_chart_and_two_line_charts_and_defaults_to_month
 
 def test_switching_to_weekly_changes_the_data_not_the_layout():
     at = run_app(date_range=Y2024, include_bots=True)
+    charts_before = len(charts(at))
     monthly = chart_data(charts(at)[0])
     at.radio(key="grain").set_value("Weekly").run()
     assert not at.exception
     weekly = chart_data(charts(at)[0])
-    assert len(charts(at)) == 6  # 3 trend charts + breakdown + funnel + open-PR ages
+    assert len(charts(at)) == charts_before  # same page, only the trend data changes
     assert len(monthly) == 12 and len(weekly) > 50
     assert int(monthly["merged_prs"].sum()) == int(weekly["merged_prs"].sum()) == 109
     assert any("per week" in m.value for m in at.markdown)
@@ -230,3 +231,49 @@ def test_open_pr_age_chart_keeps_the_age_bands_in_order():
 def test_open_pr_section_with_nothing_open_shows_a_message_not_an_error():
     at = run_app(date_range=(datetime.date(2026, 3, 30), datetime.date(2026, 9, 30)))
     assert any("still open when the data was pulled" in i.value for i in at.info)
+
+
+# ---------- who reviews and who writes ----------
+
+QUIET = (datetime.date(2026, 3, 30), datetime.date(2026, 8, 28))
+
+
+def person_tables(at):
+    reviewers = next(t.value for t in at.dataframe if "PRs reviewed" in t.value.columns)
+    authors = next(t.value for t in at.dataframe if "PRs opened" in t.value.columns)
+    return reviewers, authors
+
+
+def test_people_section_shows_top_reviewers_and_authors_from_the_queries():
+    at = run_app()
+    reviewers, authors = person_tables(at)
+    assert reviewers["reviewer"].tolist()[:3] == ["lovelydinosaur", "Kludex", "zanieb"]
+    assert reviewers["PRs reviewed"].tolist()[0] == 158
+    assert authors["author"].tolist()[:2] == ["lovelydinosaur", "karpetrosyan"]
+    assert "dependabot[bot]" not in authors["author"].tolist()
+    assert not any(name.endswith("[bot]") for name in reviewers["reviewer"])
+
+
+def test_people_section_ignores_the_bot_toggle_and_follows_the_date_range():
+    off = person_tables(run_app(include_bots=False))
+    on = person_tables(run_app(include_bots=True))
+    assert off[0].equals(on[0]) and off[1].equals(on[1])
+    y2024 = person_tables(run_app(date_range=Y2024))
+    assert y2024[0]["PRs reviewed"].tolist() == queries.top_reviewers(*Y2024)["reviewers"]["prs_reviewed"].tolist()
+
+
+def test_people_section_explains_how_reviews_are_counted():
+    text = " ".join(c.value for c in run_app().caption)
+    assert "188 comments that authors left on their own PRs are not counted" in text
+    assert "different PRs" in text and "People only" in text
+
+
+def test_reviewer_chart_keeps_the_ranking_order():
+    chart = next(c for c in charts(run_app()) if "prs_reviewed" in c.proto.spec)
+    assert chart_data(chart)["reviewer"].tolist()[:2] == ["lovelydinosaur", "Kludex"]
+
+
+def test_people_section_with_no_activity_shows_messages_not_errors():
+    at = run_app(date_range=QUIET)
+    text = " ".join(i.value for i in at.info)
+    assert "Nobody reviewed anyone else's PR" in text and "No PRs were opened by people" in text
