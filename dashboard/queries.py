@@ -45,6 +45,53 @@ def data_window() -> tuple[datetime.date, datetime.date, datetime.datetime]:
     return first_opened, data_as_of.date(), data_as_of
 
 
+# Which dim_date column labels each period. A fixed lookup, so the column name put into
+# the SQL below never comes from user input.
+GRAIN_COLUMNS = {"week": "week_start_date", "month": "month_start_date"}
+
+
+def trend(start: datetime.date, end: datetime.date, include_bots: bool, grain: str):
+    """Merged PRs and lead time per week or month, for merged PRs in [start, end].
+
+    One row per period that has any day in the range, from dim_date, so a period with no
+    merges shows up with 0 PRs and no lead time (None) instead of being missing. The first
+    and last period can be partial when the range starts or ends mid-period.
+    Weeks start on Monday; period_start is the first day of the week or month.
+    """
+    if grain not in GRAIN_COLUMNS:
+        raise ValueError(f"grain must be one of {sorted(GRAIN_COLUMNS)}, got {grain!r}")
+    col = GRAIN_COLUMNS[grain]
+    return run_df(
+        f"""
+        select
+            p.period_start,
+            coalesce(m.merged_prs, 0) as merged_prs,
+            m.median_lead_time_hours,
+            m.p90_lead_time_hours
+        from (
+            select distinct {col} as period_start
+            from main.dim_date
+            where date_day between ? and ?
+        ) p
+        left join (
+            select
+                d.{col} as period_start,
+                count(*) as merged_prs,
+                median(f.lead_time_hours) as median_lead_time_hours,
+                quantile_cont(f.lead_time_hours, 0.9) as p90_lead_time_hours
+            from main.fct_pull_requests f
+            join main.dim_date d on cast(f.merged_at as date) = d.date_day
+            where f.is_merged
+              and d.date_day between ? and ?
+              and (? or not f.is_bot)
+            group by 1
+        ) m on p.period_start = m.period_start
+        order by p.period_start
+        """,
+        [start, end, start, end, include_bots],
+    )
+
+
 def kpis(start: datetime.date, end: datetime.date, include_bots: bool) -> dict:
     """The headline figures for merged PRs in [start, end]. Missing values are None, never 0."""
     (merged, median_lead, p90_lead, reviewed, median_wait), = run(

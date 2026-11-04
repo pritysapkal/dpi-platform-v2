@@ -104,3 +104,75 @@ def test_data_window_comes_from_the_fact_table():
     first, last, as_of = queries.data_window()
     assert first == datetime.date(2023, 1, 1)
     assert last == as_of.date() == datetime.date(2026, 11, 1)
+
+
+# ---------- trend (weekly / monthly) ----------
+
+RAW_TREND_SQL = """
+select cast(date_trunc('{unit}', cast(merged_at as timestamp)) as date) as period_start,
+       count(*),
+       median((epoch(cast(merged_at as timestamp)) - epoch(cast(created_at as timestamp))) / 3600.0),
+       quantile_cont((epoch(cast(merged_at as timestamp)) - epoch(cast(created_at as timestamp))) / 3600.0, 0.9)
+from raw.github_pull_requests
+where merged_at is not null
+  and cast(cast(merged_at as timestamp) as date) between ? and ?
+  and (? or author not like '%[bot]')
+group by 1
+"""
+
+
+def raw_trend(unit, start, end, include_bots):
+    con = duckdb.connect(str(queries.DB_PATH), read_only=True)
+    try:
+        rows = con.execute(RAW_TREND_SQL.format(unit=unit), [start, end, include_bots]).fetchall()
+    finally:
+        con.close()
+    return {r[0]: r[1:] for r in rows}
+
+
+@pytest.mark.parametrize("include_bots", [False, True])
+@pytest.mark.parametrize("grain", ["month", "week"])
+@pytest.mark.parametrize("window", [FULL, Y2024], ids=["full", "2024"])
+def test_trend_matches_independent_calculation_from_raw_tables(window, grain, include_bots):
+    expected = raw_trend(grain, *window, include_bots)
+    df = queries.trend(*window, include_bots, grain)
+    got = {row.period_start.date(): row for row in df.itertuples()}
+    # every period that has merges is present and right
+    for period, (n, median_h, p90_h) in expected.items():
+        assert got[period].merged_prs == n
+        assert got[period].median_lead_time_hours == pytest.approx(median_h, abs=0.01)
+        assert got[period].p90_lead_time_hours == pytest.approx(p90_h, abs=0.01)
+    # and every other period is present as zero merges with no lead time, not missing
+    for period, row in got.items():
+        if period not in expected:
+            assert row.merged_prs == 0
+            assert row.median_lead_time_hours != row.median_lead_time_hours  # NaN: no value, not 0
+
+
+@pytest.mark.parametrize("grain", ["month", "week"])
+@pytest.mark.parametrize("include_bots", [False, True])
+def test_trend_totals_add_up_to_the_kpi_total(grain, include_bots):
+    for window in (FULL, Y2024, Y2023):
+        assert queries.trend(*window, include_bots, grain)["merged_prs"].sum() == queries.kpis(*window, include_bots)["merged_prs"]
+
+
+def test_trend_periods_start_on_the_right_day_and_have_no_gaps():
+    months = queries.trend(*Y2024, True, "month")
+    assert len(months) == 12 and all(d.day == 1 for d in months["period_start"])
+    weeks = queries.trend(*Y2024, True, "week")
+    assert all(d.weekday() == 0 for d in weeks["period_start"])  # Monday
+    gaps = weeks["period_start"].diff().dropna().dt.days
+    assert set(gaps) == {7}
+
+
+def test_trend_2024_monthly_counts_match_the_raw_tables_month_by_month():
+    expected = raw_trend("month", *Y2024, True)
+    df = queries.trend(*Y2024, True, "month")
+    assert df["merged_prs"].tolist() == [expected.get(d.date(), (0,))[0] for d in df["period_start"]]
+    assert int(df["merged_prs"].sum()) == 109
+    assert int(queries.trend(*Y2024, False, "month")["merged_prs"].sum()) == 92
+
+
+def test_trend_rejects_an_unknown_grain():
+    with pytest.raises(ValueError, match="grain must be one of"):
+        queries.trend(*Y2024, True, "day; drop table x")

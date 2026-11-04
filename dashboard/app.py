@@ -15,6 +15,11 @@ def load_kpis(start, end, include_bots):
     return queries.kpis(start, end, include_bots)
 
 
+@st.cache_data(ttl=60)
+def load_trend(start, end, include_bots, grain):
+    return queries.trend(start, end, include_bots, grain)
+
+
 def hours(value, digits=1):
     return "–" if value is None else f"{value:,.{digits}f} h"
 
@@ -90,3 +95,38 @@ c5.metric(
 
 if k["merged_prs"] == 0:
     st.warning("No PRs were merged in this date range with these filters.")
+
+st.divider()
+
+st.subheader("Trends")
+grain_label = st.radio("Group by", ["Monthly", "Weekly"], horizontal=True, key="grain")
+grain = "month" if grain_label == "Monthly" else "week"
+unit = grain  # "month" or "week", for captions
+trend = load_trend(start, end, include_bots, grain)
+
+st.markdown("**Deployment frequency: PRs merged per " + unit + "**")
+st.bar_chart(trend, x="period_start", y="merged_prs", x_label=f"{unit} starting", y_label="merged PRs")
+st.caption(
+    f"How many PRs were merged each {unit} (a merge is used as a proxy for a deployment). "
+    f"A {unit} with no merges shows as zero. Good looks like steady output without long silent gaps; "
+    f"a run of empty {unit}s usually means shipping stopped. The first and last {unit} can be partial "
+    "if the date range starts or ends part-way through."
+)
+
+left, right = st.columns(2)
+with left:
+    st.markdown("**Lead time: median hours per " + unit + "**")
+    st.line_chart(trend, x="period_start", y="median_lead_time_hours", x_label=f"{unit} starting", y_label="hours")
+    st.caption(
+        f"The typical PR's time from opened to merged, for PRs merged in each {unit}. Good looks like low and "
+        f"stable, or trending down. A {unit} with no merges has no point. With only a few merges in a {unit} the "
+        "median jumps around, so read it together with the PR count chart above."
+    )
+with right:
+    st.markdown("**Lead time: 90th percentile hours per " + unit + "**")
+    st.line_chart(trend, x="period_start", y="p90_lead_time_hours", x_label=f"{unit} starting", y_label="hours")
+    st.caption(
+        f"How long the slowest tenth of PRs took in each {unit}: 9 in 10 were merged faster than this. Good looks "
+        "like staying close to the median. Tall spikes mean a few PRs sat waiting for a long time, which the "
+        "median hides."
+    )
