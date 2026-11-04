@@ -263,3 +263,61 @@ def test_breakdown_of_an_empty_range_has_no_values_not_zeros():
     b = queries.lead_time_breakdown(datetime.date(2025, 12, 1), datetime.date(2025, 12, 3))
     assert b["split_prs"] == 0 and b["not_split_prs"] == 0
     assert b["median_wait_hours"] is None and b["wait_share_pct"] is None
+
+
+# ---------- review funnel ----------
+
+RAW_FUNNEL_SQL = """
+with prs as (
+    select
+        p.number,
+        cast(p.merged_at as timestamp) as merged,
+        p.merged_at is not null as is_merged,
+        p.state,
+        exists (select 1 from raw.github_pr_reviews r where r.pr_number = p.number
+                and (p.merged_at is null or cast(r.submitted_at as timestamp) <= cast(p.merged_at as timestamp))) as reviewed,
+        exists (select 1 from raw.github_pr_reviews r where r.pr_number = p.number and r.review_state = 'APPROVED') as approved
+    from raw.github_pull_requests p
+    where cast(cast(p.created_at as timestamp) as date) between ? and ?
+      and (? or p.author not like '%[bot]')
+)
+select count(*), count(*) filter (where reviewed), count(*) filter (where approved), count(*) filter (where is_merged),
+       count(*) filter (where is_merged and not reviewed), count(*) filter (where is_merged and not approved),
+       count(*) filter (where not is_merged and state = 'closed'), count(*) filter (where state = 'open')
+from prs
+"""
+
+
+@pytest.mark.parametrize("include_bots", [False, True])
+@pytest.mark.parametrize("window", [FULL, Y2023, Y2024], ids=["full", "2023", "2024"])
+def test_funnel_matches_independent_calculation_from_raw_tables(window, include_bots):
+    con = duckdb.connect(str(queries.DB_PATH), read_only=True)
+    try:
+        expected = con.execute(RAW_FUNNEL_SQL, [*window, include_bots]).fetchone()
+    finally:
+        con.close()
+    f = queries.review_funnel(*window, include_bots)
+    assert (f["opened"], f["reviewed"], f["approved"], f["merged"], f["merged_without_review"],
+            f["merged_without_approval"], f["closed_without_merge"], f["still_open"]) == tuple(expected)
+
+
+@pytest.mark.parametrize("include_bots", [False, True])
+def test_funnel_stages_are_consistent(include_bots):
+    f = queries.review_funnel(*FULL, include_bots)
+    assert f["opened"] == f["merged"] + f["closed_without_merge"] + f["still_open"]  # every PR is in exactly one end state
+    assert f["approved"] <= f["reviewed"] <= f["opened"]
+    assert f["merged_without_review"] <= f["merged_without_approval"] <= f["merged"]
+
+
+def test_funnel_known_values_and_bot_effect():
+    everyone = queries.review_funnel(*FULL, True)
+    assert (everyone["opened"], everyone["merged"]) == (523, 288)
+    humans = queries.review_funnel(*FULL, False)
+    assert (humans["opened"], humans["reviewed"], humans["approved"], humans["merged"]) == (419, 255, 201, 207)
+    assert everyone["opened"] - humans["opened"] == 104  # the bot PRs
+
+
+def test_funnel_of_a_range_with_no_opened_prs_is_all_zero():
+    # no PR was opened between 2026-03-30 and 2026-09-30 (the repo went quiet)
+    f = queries.review_funnel(datetime.date(2026, 3, 30), datetime.date(2026, 9, 30), True)
+    assert set(f.values()) == {0}

@@ -142,6 +142,46 @@ def lead_time_breakdown(start: datetime.date, end: datetime.date) -> dict:
     }
 
 
+def review_funnel(start: datetime.date, end: datetime.date, include_bots: bool) -> dict:
+    """What happened to the PRs opened in [start, end]: opened -> reviewed -> approved -> merged.
+
+    "Reviewed" means it got a review while it was still open: any review for a PR that was not
+    merged, a review before the merge for one that was. "Approved" means at least one APPROVED
+    review (no PR in the data was approved only after merging). Merged PRs are not all
+    approved, so the stages are counts, not a strict funnel: merged_without_approval says how
+    many merged PRs skipped a stage, and merged_without_review how many of those had no review.
+    PRs still open at the data's pull date are counted in opened but cannot have merged yet.
+    """
+    (opened, reviewed, approved, merged, merged_no_review, merged_no_approval,
+     closed_unmerged, still_open), = run(
+        """
+        select
+            count(*),
+            count(*) filter (where was_reviewed and (not is_merged or was_reviewed_before_merge)),
+            count(*) filter (where was_approved),
+            count(*) filter (where is_merged),
+            count(*) filter (where is_merged and not was_reviewed_before_merge),
+            count(*) filter (where is_merged and not was_approved),
+            count(*) filter (where pr_lifecycle_stage = 'closed_without_merge'),
+            count(*) filter (where pr_lifecycle_stage = 'open')
+        from main.fct_pull_requests
+        where cast(opened_at as date) between ? and ?
+          and (? or not is_bot)
+        """,
+        [start, end, include_bots],
+    )
+    return {
+        "opened": opened,
+        "reviewed": reviewed,
+        "approved": approved,
+        "merged": merged,
+        "merged_without_review": merged_no_review,
+        "merged_without_approval": merged_no_approval,
+        "closed_without_merge": closed_unmerged,
+        "still_open": still_open,
+    }
+
+
 def kpis(start: datetime.date, end: datetime.date, include_bots: bool) -> dict:
     """The headline figures for merged PRs in [start, end]. Missing values are None, never 0."""
     (merged, median_lead, p90_lead, reviewed, median_wait), = run(

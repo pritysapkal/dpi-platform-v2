@@ -1,6 +1,7 @@
 """Run the real Streamlit app headlessly (no browser) and read what it shows."""
 
 import datetime
+import json
 
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -89,7 +90,7 @@ def chart_data(chart):
 def test_trend_section_has_a_bar_chart_and_two_line_charts_and_defaults_to_monthly():
     at = run_app()
     assert at.radio(key="grain").value == "Monthly"
-    bar, median_line, p90_line, _breakdown = charts(at)
+    bar, median_line, p90_line = charts(at)[:3]
     assert '"bar"' in bar.proto.spec and "merged_prs" in bar.proto.spec
     assert "median_lead_time_hours" in median_line.proto.spec
     assert "p90_lead_time_hours" in p90_line.proto.spec
@@ -101,7 +102,7 @@ def test_switching_to_weekly_changes_the_data_not_the_layout():
     at.radio(key="grain").set_value("Weekly").run()
     assert not at.exception
     weekly = chart_data(charts(at)[0])
-    assert len(charts(at)) == 4  # 3 trend charts + the lead-time breakdown
+    assert len(charts(at)) == 5  # 3 trend charts + the lead-time breakdown + the funnel
     assert len(monthly) == 12 and len(weekly) > 50
     assert int(monthly["merged_prs"].sum()) == int(weekly["merged_prs"].sum()) == 109
     assert any("per week" in m.value for m in at.markdown)
@@ -153,4 +154,44 @@ def test_breakdown_follows_the_date_range():
 def test_breakdown_with_nothing_to_split_shows_a_message_not_an_error():
     at = run_app(date_range=NO_MERGES)
     assert any("nothing to split" in i.value for i in at.info)
-    assert len(at.dataframe) == 0
+    assert not any("Stage" in table.value.columns for table in at.dataframe)  # no breakdown table
+
+
+# ---------- review funnel ----------
+
+def funnel_table(at):
+    return next(t.value for t in at.dataframe if "% of opened" in t.value.columns)
+
+
+def test_funnel_section_matches_the_query_and_defaults_to_human_prs():
+    at = run_app()
+    f = queries.review_funnel(datetime.date(2023, 1, 1), datetime.date(2026, 11, 1), False)
+    table = funnel_table(at)
+    assert table["stage"].tolist() == ["Opened", "Reviewed", "Approved", "Merged"]
+    assert table["PRs"].tolist() == [f["opened"], f["reviewed"], f["approved"], f["merged"]] == [419, 255, 201, 207]
+    assert table["% of opened"].tolist()[0] == 100.0
+    assert [c.proto.spec for c in charts(at)][4].count("PRs") > 0
+
+
+def test_funnel_follows_the_bot_toggle_and_the_date_range():
+    everyone = funnel_table(run_app(include_bots=True))["PRs"].tolist()
+    assert everyone[0] == 523 and everyone[3] == 288
+    y2024 = funnel_table(run_app(date_range=Y2024, include_bots=False))["PRs"].tolist()
+    expected = queries.review_funnel(*Y2024, False)
+    assert y2024 == [expected["opened"], expected["reviewed"], expected["approved"], expected["merged"]]
+
+
+def test_funnel_chart_keeps_the_stages_in_funnel_order():
+    chart = charts(run_app())[4]
+    assert chart_data(chart)["stage"].tolist() == ["Opened", "Reviewed", "Approved", "Merged"]
+    assert json.loads(chart.proto.spec)["encoding"]["y"]["sort"] is None  # not re-sorted alphabetically or by size
+
+
+def test_funnel_with_no_opened_prs_shows_a_message_not_an_error():
+    at = run_app(date_range=(datetime.date(2026, 3, 30), datetime.date(2026, 9, 30)))
+    assert any("No PRs were opened" in i.value for i in at.info)
+
+
+def test_funnel_caption_is_honest_that_it_is_not_a_strict_funnel():
+    text = " ".join(c.value for c in run_app().caption)
+    assert "never approved" in text and "still open when the data was pulled" in text
