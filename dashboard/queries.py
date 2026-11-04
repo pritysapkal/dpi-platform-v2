@@ -182,6 +182,62 @@ def review_funnel(start: datetime.date, end: datetime.date, include_bots: bool) 
     }
 
 
+# Age buckets for open PRs: (label, upper bound in days, exclusive). The last has no upper bound.
+AGE_BUCKETS = [
+    ("Under 1 week", 7),
+    ("1 to 4 weeks", 30),
+    ("1 to 3 months", 90),
+    ("3 to 6 months", 180),
+    ("6 to 12 months", 365),
+    ("Over 1 year", None),
+]
+OLDEST_SHOWN = 10
+
+
+def open_pr_age(start: datetime.date, end: datetime.date, include_bots: bool) -> dict:
+    """How long the PRs still open have been waiting, among PRs opened in [start, end].
+
+    Age is measured up to data_as_of (when the data was pulled), NOT today's date: the data is
+    only as fresh as the last pull, and measuring from today would make every PR look a day
+    older each day without any new information.
+    Returns the count, median and oldest age in days, how many have had no review, an age
+    histogram (every bucket present, empty ones as 0), and the oldest PRs.
+    """
+    df = run_df(
+        """
+        select
+            pr_number,
+            pr_title,
+            author_login,
+            cast(opened_at as date) as opened_on,
+            date_diff('second', opened_at, data_as_of) / 86400.0 as age_days,
+            was_reviewed,
+            was_approved
+        from main.fct_pull_requests
+        where pr_lifecycle_stage = 'open'
+          and cast(opened_at as date) between ? and ?
+          and (? or not is_bot)
+        order by age_days desc, pr_number
+        """,
+        [start, end, include_bots],
+    )
+
+    def bucket(age: float) -> str:
+        for label, upper in AGE_BUCKETS:
+            if upper is None or age < upper:
+                return label
+
+    counts = df["age_days"].map(bucket).value_counts() if len(df) else {}
+    return {
+        "open_prs": len(df),
+        "median_age_days": float(df["age_days"].median()) if len(df) else None,
+        "oldest_age_days": float(df["age_days"].max()) if len(df) else None,
+        "never_reviewed": int((~df["was_reviewed"]).sum()) if len(df) else 0,
+        "age_buckets": [(label, int(counts.get(label, 0))) for label, _ in AGE_BUCKETS],
+        "oldest": df.head(OLDEST_SHOWN).reset_index(drop=True),
+    }
+
+
 def kpis(start: datetime.date, end: datetime.date, include_bots: bool) -> dict:
     """The headline figures for merged PRs in [start, end]. Missing values are None, never 0."""
     (merged, median_lead, p90_lead, reviewed, median_wait), = run(

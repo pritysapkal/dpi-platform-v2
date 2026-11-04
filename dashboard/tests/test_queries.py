@@ -321,3 +321,79 @@ def test_funnel_of_a_range_with_no_opened_prs_is_all_zero():
     # no PR was opened between 2026-03-30 and 2026-09-30 (the repo went quiet)
     f = queries.review_funnel(datetime.date(2026, 3, 30), datetime.date(2026, 9, 30), True)
     assert set(f.values()) == {0}
+
+
+# ---------- open-PR age ----------
+
+RAW_OPEN_SQL = """
+select
+    p.number,
+    (epoch(cast(p._loaded_at as timestamp)) - epoch(cast(p.created_at as timestamp))) / 86400.0 as age_days,
+    not exists (select 1 from raw.github_pr_reviews r where r.pr_number = p.number) as never_reviewed
+from raw.github_pull_requests p
+where p.state = 'open'
+  and cast(cast(p.created_at as timestamp) as date) between ? and ?
+  and (? or p.author not like '%[bot]')
+order by age_days desc, p.number
+"""
+
+
+def raw_open(start, end, include_bots):
+    con = duckdb.connect(str(queries.DB_PATH), read_only=True)
+    try:
+        return con.execute(RAW_OPEN_SQL, [start, end, include_bots]).fetchall()
+    finally:
+        con.close()
+
+
+def bucket_counts(ages):
+    edges = [7, 30, 90, 180, 365]
+    counts = [0] * 6
+    for a in ages:
+        counts[next((i for i, e in enumerate(edges) if a < e), 5)] += 1
+    return counts
+
+
+@pytest.mark.parametrize("include_bots", [False, True])
+@pytest.mark.parametrize("window", [FULL, Y2024, (datetime.date(2026, 1, 1), datetime.date(2026, 11, 1))],
+                         ids=["full", "2024", "2026"])
+def test_open_pr_age_matches_independent_calculation_from_raw_tables(window, include_bots):
+    import statistics
+    rows = raw_open(*window, include_bots)
+    ages = [r[1] for r in rows]
+    o = queries.open_pr_age(*window, include_bots)
+    assert o["open_prs"] == len(rows)
+    assert o["median_age_days"] == pytest.approx(statistics.median(ages), abs=0.001)
+    assert o["oldest_age_days"] == pytest.approx(max(ages), abs=0.001)
+    assert o["never_reviewed"] == sum(r[2] for r in rows)
+    assert [n for _, n in o["age_buckets"]] == bucket_counts(ages)
+    assert o["oldest"]["pr_number"].tolist() == [r[0] for r in rows[:10]]
+
+
+def test_open_pr_age_is_measured_from_data_as_of_not_from_today():
+    import inspect
+    source = inspect.getsource(queries.open_pr_age).lower()
+    assert not any(clock in source for clock in ("now()", "current_date", "current_timestamp", "date.today", "datetime.now"))
+    # ...and the ages equal "pull date minus opened date" exactly, which a today-based figure would not
+    o = queries.open_pr_age(*FULL, True)
+    pulled = queries.data_window()[2]
+    first = o["oldest"].iloc[0]
+    opened = queries.run("select opened_at from main.fct_pull_requests where pr_number = ?", [int(first["pr_number"])])[0][0]
+    assert first["age_days"] == pytest.approx((pulled - opened).total_seconds() / 86400.0, abs=1e-4)  # whole-second resolution
+
+
+def test_open_pr_age_known_values_and_every_bucket_is_present():
+    o = queries.open_pr_age(*FULL, True)
+    assert (o["open_prs"], o["never_reviewed"]) == (76, 47)
+    assert round(o["median_age_days"], 1) == 369.0 and round(o["oldest_age_days"], 1) == 1199.1
+    assert [label for label, _ in o["age_buckets"]] == [b[0] for b in queries.AGE_BUCKETS]
+    assert sum(n for _, n in o["age_buckets"]) == 76
+    humans = queries.open_pr_age(*FULL, False)
+    assert humans["open_prs"] == 73
+
+
+def test_open_pr_age_with_no_open_prs_is_empty_not_an_error():
+    o = queries.open_pr_age(datetime.date(2026, 3, 30), datetime.date(2026, 9, 30), True)
+    assert o["open_prs"] == 0 and o["median_age_days"] is None and o["oldest_age_days"] is None
+    assert o["never_reviewed"] == 0 and len(o["oldest"]) == 0
+    assert all(n == 0 for _, n in o["age_buckets"])

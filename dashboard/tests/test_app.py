@@ -31,7 +31,7 @@ def tiles(at):
 
 def test_default_view_has_the_five_tiles_and_no_days_tracked():
     t = tiles(run_app())
-    assert list(t) == ["Merged PRs", "Median lead time", "p90 lead time", "Review coverage", "Median time to first review"]
+    assert list(t)[:5] == ["Merged PRs", "Median lead time", "p90 lead time", "Review coverage", "Median time to first review"]
     assert "Days Tracked" not in t
 
 
@@ -102,7 +102,7 @@ def test_switching_to_weekly_changes_the_data_not_the_layout():
     at.radio(key="grain").set_value("Weekly").run()
     assert not at.exception
     weekly = chart_data(charts(at)[0])
-    assert len(charts(at)) == 5  # 3 trend charts + the lead-time breakdown + the funnel
+    assert len(charts(at)) == 6  # 3 trend charts + breakdown + funnel + open-PR ages
     assert len(monthly) == 12 and len(weekly) > 50
     assert int(monthly["merged_prs"].sum()) == int(weekly["merged_prs"].sum()) == 109
     assert any("per week" in m.value for m in at.markdown)
@@ -195,3 +195,38 @@ def test_funnel_with_no_opened_prs_shows_a_message_not_an_error():
 def test_funnel_caption_is_honest_that_it_is_not_a_strict_funnel():
     text = " ".join(c.value for c in run_app().caption)
     assert "never approved" in text and "still open when the data was pulled" in text
+
+
+# ---------- open PRs ----------
+
+def open_table(at):
+    return next(t.value for t in at.dataframe if "Age (days)" in t.value.columns)
+
+
+def test_open_pr_section_shows_tiles_and_the_ten_oldest_human_prs_by_default():
+    at = run_app()
+    t = tiles(at)
+    expected = queries.open_pr_age(datetime.date(2023, 1, 1), datetime.date(2026, 11, 1), False)
+    assert t["Open PRs"] == f"{expected['open_prs']:,}" == "73"
+    assert t["Median age"] == f"{expected['median_age_days']:,.0f} days"
+    assert t["Never reviewed"] == "45"
+    table = open_table(at)
+    assert table["PR"].tolist() == expected["oldest"]["pr_number"].tolist() and len(table) == 10
+    assert table["Age (days)"].is_monotonic_decreasing
+
+
+def test_open_pr_section_follows_the_bot_toggle_and_says_ages_are_as_of_the_pull_date():
+    assert tiles(run_app(include_bots=True))["Open PRs"] == "76"
+    text = " ".join(c.value for c in run_app().caption)
+    assert "measured up to 2026-11-01" in text and "not today" in text
+
+
+def test_open_pr_age_chart_keeps_the_age_bands_in_order():
+    chart = charts(run_app())[5]
+    assert chart_data(chart)["age"].tolist() == [b[0] for b in queries.AGE_BUCKETS]
+    assert chart_data(chart)["open PRs"].sum() == 73
+
+
+def test_open_pr_section_with_nothing_open_shows_a_message_not_an_error():
+    at = run_app(date_range=(datetime.date(2026, 3, 30), datetime.date(2026, 9, 30)))
+    assert any("still open when the data was pulled" in i.value for i in at.info)

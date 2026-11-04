@@ -30,6 +30,11 @@ def load_funnel(start, end, include_bots):
     return queries.review_funnel(start, end, include_bots)
 
 
+@st.cache_data(ttl=60)
+def load_open_prs(start, end, include_bots):
+    return queries.open_pr_age(start, end, include_bots)
+
+
 def hours(value, digits=1):
     return "–" if value is None else f"{value:,.{digits}f} h"
 
@@ -225,4 +230,54 @@ else:
             "Reviewed means a review while the PR was still open. This is a count at each stage, not a strict "
             f"funnel: {f['merged_without_approval']:,} merged PRs were never approved, and "
             f"{f['merged_without_review']:,} of those had no review before they were merged."
+        )
+
+st.divider()
+
+st.subheader("Open PRs: how long they have been waiting")
+st.caption(
+    f"Ages are measured up to {data_as_of:%Y-%m-%d} (when the data was pulled), not today, so they don't change "
+    "from day to day. Covers PRs opened in the date range that were still open at that point."
+)
+o = load_open_prs(start, end, include_bots)
+
+if o["open_prs"] == 0:
+    st.info("No PRs opened in this date range were still open when the data was pulled.")
+else:
+    import pandas as pd
+
+    t1, t2, t3, t4 = st.columns(4)
+    t1.metric("Open PRs", f"{o['open_prs']:,}")
+    t2.metric("Median age", f"{o['median_age_days']:,.0f} days", help="Half of the open PRs have been waiting longer than this.")
+    t3.metric("Oldest", f"{o['oldest_age_days']:,.0f} days")
+    t4.metric("Never reviewed", f"{o['never_reviewed']:,}", help="Open PRs that nobody has reviewed yet.")
+
+    left, right = st.columns([2, 3])
+    with left:
+        ages = pd.DataFrame(o["age_buckets"], columns=["age", "open PRs"])
+        st.bar_chart(ages, x="age", y="open PRs", sort=False, x_label="how long it has been open", y_label="open PRs")
+        st.caption(
+            "How many open PRs fall into each age band. Good looks like most open PRs being recent: a pile in the "
+            "oldest bands means PRs are being left to go stale rather than merged or closed."
+        )
+    with right:
+        oldest = o["oldest"]
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "PR": oldest["pr_number"],
+                    "Title": oldest["pr_title"].str.slice(0, 70),
+                    "Author": oldest["author_login"],
+                    "Opened": oldest["opened_on"],
+                    "Age (days)": oldest["age_days"].round(0).astype(int),
+                    "Reviewed": oldest["was_reviewed"].map({True: "yes", False: "no"}),
+                    "Approved": oldest["was_approved"].map({True: "yes", False: "no"}),
+                }
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+        st.caption(
+            f"The {len(oldest)} oldest open PRs. These are the best candidates to merge, or to close if they are "
+            "no longer wanted."
         )
