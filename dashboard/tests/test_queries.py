@@ -176,3 +176,90 @@ def test_trend_2024_monthly_counts_match_the_raw_tables_month_by_month():
 def test_trend_rejects_an_unknown_grain():
     with pytest.raises(ValueError, match="grain must be one of"):
         queries.trend(*Y2024, True, "day; drop table x")
+
+
+# ---------- lead-time breakdown: waiting for first review vs in review ----------
+
+RAW_BREAKDOWN_SQL = """
+with first_review as (
+    select pr_number, min(cast(submitted_at as timestamp)) as first_at
+    from raw.github_pr_reviews group by 1
+),
+prs as (
+    select
+        cast(p.created_at as timestamp) as opened,
+        cast(p.merged_at as timestamp) as merged,
+        r.first_at,
+        p.author like '%[bot]' as is_bot
+    from raw.github_pull_requests p
+    left join first_review r on r.pr_number = p.number
+    where p.merged_at is not null
+      and cast(cast(p.merged_at as timestamp) as date) between ? and ?
+),
+split as (
+    select
+        (epoch(first_at) - epoch(opened)) / 3600.0 as wait_h,
+        (epoch(merged) - epoch(first_at)) / 3600.0 as review_h,
+        (epoch(merged) - epoch(opened)) / 3600.0 as lead_h
+    from prs
+    where not is_bot and first_at is not null and first_at <= merged
+)
+select count(*), median(wait_h), quantile_cont(wait_h, 0.9), median(review_h), quantile_cont(review_h, 0.9),
+       median(lead_h), quantile_cont(lead_h, 0.9),
+       100.0 * sum(wait_h) / (sum(wait_h) + sum(review_h)),
+       (select count(*) from prs where not is_bot and (first_at is null or first_at > merged))
+from split
+"""
+
+
+def raw_breakdown(start, end):
+    con = duckdb.connect(str(queries.DB_PATH), read_only=True)
+    try:
+        return con.execute(RAW_BREAKDOWN_SQL, [start, end]).fetchone()
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize("window", [FULL, Y2023, Y2024, (datetime.date(2025, 1, 1), datetime.date(2025, 12, 31))],
+                         ids=["full", "2023", "2024", "2025"])
+def test_breakdown_matches_independent_calculation_from_raw_tables(window):
+    n, wait_med, wait_p90, rev_med, rev_p90, lead_med, lead_p90, wait_share, not_split = raw_breakdown(*window)
+    b = queries.lead_time_breakdown(*window)
+    assert b["split_prs"] == n and b["not_split_prs"] == not_split
+    assert b["median_wait_hours"] == pytest.approx(wait_med, abs=0.01)
+    assert b["p90_wait_hours"] == pytest.approx(wait_p90, abs=0.02)
+    assert b["median_in_review_hours"] == pytest.approx(rev_med, abs=0.01)
+    assert b["p90_in_review_hours"] == pytest.approx(rev_p90, abs=0.02)
+    assert b["median_lead_time_hours"] == pytest.approx(lead_med, abs=0.01)
+    assert b["p90_lead_time_hours"] == pytest.approx(lead_p90, abs=0.02)
+    assert b["wait_share_pct"] == pytest.approx(wait_share, abs=0.05)
+
+
+def test_breakdown_shares_add_to_100_and_stages_add_up_to_lead_time():
+    b = queries.lead_time_breakdown(*FULL)
+    assert b["wait_share_pct"] + b["in_review_share_pct"] == pytest.approx(100.0)
+    # for every reviewed-before-merge PR, wait + in review = lead time (to the model's 2-decimal rounding)
+    worst = queries.run(
+        "select max(abs(review_wait_hours + time_in_review_hours - lead_time_hours)) "
+        "from main.fct_pull_requests where is_merged and was_reviewed_before_merge"
+    )[0][0]
+    assert worst <= 0.011
+
+
+def test_breakdown_counts_every_human_merge_exactly_once():
+    b = queries.lead_time_breakdown(*FULL)
+    humans = queries.kpis(*FULL, False)["merged_prs"]
+    assert b["split_prs"] + b["not_split_prs"] == humans == 207
+
+
+def test_breakdown_is_human_only_known_full_range_values():
+    b = queries.lead_time_breakdown(*FULL)
+    assert (b["split_prs"], b["not_split_prs"]) == (183, 24)
+    assert round(b["median_wait_hours"], 2) == 6.88 and round(b["median_in_review_hours"], 2) == 0.56
+    assert round(b["wait_share_pct"], 1) == 55.9
+
+
+def test_breakdown_of_an_empty_range_has_no_values_not_zeros():
+    b = queries.lead_time_breakdown(datetime.date(2025, 12, 1), datetime.date(2025, 12, 3))
+    assert b["split_prs"] == 0 and b["not_split_prs"] == 0
+    assert b["median_wait_hours"] is None and b["wait_share_pct"] is None

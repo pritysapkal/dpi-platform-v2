@@ -89,7 +89,7 @@ def chart_data(chart):
 def test_trend_section_has_a_bar_chart_and_two_line_charts_and_defaults_to_monthly():
     at = run_app()
     assert at.radio(key="grain").value == "Monthly"
-    bar, median_line, p90_line = charts(at)
+    bar, median_line, p90_line, _breakdown = charts(at)
     assert '"bar"' in bar.proto.spec and "merged_prs" in bar.proto.spec
     assert "median_lead_time_hours" in median_line.proto.spec
     assert "p90_lead_time_hours" in p90_line.proto.spec
@@ -101,7 +101,7 @@ def test_switching_to_weekly_changes_the_data_not_the_layout():
     at.radio(key="grain").set_value("Weekly").run()
     assert not at.exception
     weekly = chart_data(charts(at)[0])
-    assert len(charts(at)) == 3
+    assert len(charts(at)) == 4  # 3 trend charts + the lead-time breakdown
     assert len(monthly) == 12 and len(weekly) > 50
     assert int(monthly["merged_prs"].sum()) == int(weekly["merged_prs"].sum()) == 109
     assert any("per week" in m.value for m in at.markdown)
@@ -119,3 +119,38 @@ def test_trend_chart_data_equals_the_query_result():
     shown = chart_data(charts(at)[0])
     expected = queries.trend(*Y2024, False, "month")
     assert shown["merged_prs"].tolist() == expected["merged_prs"].tolist()
+
+
+# ---------- lead-time breakdown ----------
+
+def test_breakdown_section_shows_the_stage_table_and_share_chart():
+    at = run_app()
+    assert any("waiting for a first review vs. in review" in s.value for s in at.subheader)
+    table = at.dataframe[0].value
+    assert table["Stage"].tolist() == ["Waiting for first review", "In review (first review to merge)", "Whole lead time"]
+    expected = queries.lead_time_breakdown(datetime.date(2023, 1, 1), datetime.date(2026, 11, 1))
+    assert table["Median (h)"].tolist() == [round(expected["median_wait_hours"], 1),
+                                            round(expected["median_in_review_hours"], 1),
+                                            round(expected["median_lead_time_hours"], 1)]
+    shares = chart_data(charts(at)[3])
+    assert shares["share of hours (%)"].sum() == pytest.approx(100.0)
+
+
+def test_breakdown_ignores_the_bot_toggle_and_says_so():
+    humans = run_app(include_bots=False).dataframe[0].value
+    everyone = run_app(include_bots=True).dataframe[0].value
+    assert humans.equals(everyone)
+    assert any("Human-authored PRs only, whatever the bot checkbox says" in c.value for c in run_app().caption)
+
+
+def test_breakdown_follows_the_date_range():
+    at = run_app(date_range=Y2024)
+    expected = queries.lead_time_breakdown(*Y2024)
+    assert at.dataframe[0].value["Median (h)"].tolist()[0] == round(expected["median_wait_hours"], 1)
+    assert any(f"Based on {expected['split_prs']:,} PRs" in c.value for c in at.caption)
+
+
+def test_breakdown_with_nothing_to_split_shows_a_message_not_an_error():
+    at = run_app(date_range=NO_MERGES)
+    assert any("nothing to split" in i.value for i in at.info)
+    assert len(at.dataframe) == 0

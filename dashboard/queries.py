@@ -92,6 +92,56 @@ def trend(start: datetime.date, end: datetime.date, include_bots: bool, grain: s
     )
 
 
+def lead_time_breakdown(start: datetime.date, end: datetime.date) -> dict:
+    """Where a human PR's time to merge goes: waiting for the first review, or in review.
+
+    Human-authored merged PRs (merged in [start, end]) that were reviewed before they were
+    merged. For those, lead time = wait for first review + time in review (first review to
+    merge), so the two stages add up. Merged human PRs with no review before the merge can't
+    be split, and are counted in `not_split` instead.
+
+    `*_share_pct` is each stage's share of all hours these PRs spent open, so it is pulled
+    toward the slowest PRs; the medians describe the typical PR.
+    """
+    (n, wait_median, wait_p90, review_median, review_p90, lead_median, lead_p90,
+     wait_hours, review_hours), = run(
+        """
+        select
+            count(*),
+            median(review_wait_hours), quantile_cont(review_wait_hours, 0.9),
+            median(time_in_review_hours), quantile_cont(time_in_review_hours, 0.9),
+            median(lead_time_hours), quantile_cont(lead_time_hours, 0.9),
+            sum(review_wait_hours), sum(time_in_review_hours)
+        from main.fct_pull_requests
+        where is_merged and not is_bot and was_reviewed_before_merge
+          and cast(merged_at as date) between ? and ?
+        """,
+        [start, end],
+    )
+    (not_split,), = run(
+        """
+        select count(*)
+        from main.fct_pull_requests
+        where is_merged and not is_bot and not was_reviewed_before_merge
+          and cast(merged_at as date) between ? and ?
+        """,
+        [start, end],
+    )
+    stage_hours = (wait_hours or 0) + (review_hours or 0)
+    return {
+        "split_prs": n,
+        "not_split_prs": not_split,
+        "median_wait_hours": wait_median,
+        "p90_wait_hours": wait_p90,
+        "median_in_review_hours": review_median,
+        "p90_in_review_hours": review_p90,
+        "median_lead_time_hours": lead_median,
+        "p90_lead_time_hours": lead_p90,
+        "wait_share_pct": (100.0 * wait_hours / stage_hours) if stage_hours else None,
+        "in_review_share_pct": (100.0 * review_hours / stage_hours) if stage_hours else None,
+    }
+
+
 def kpis(start: datetime.date, end: datetime.date, include_bots: bool) -> dict:
     """The headline figures for merged PRs in [start, end]. Missing values are None, never 0."""
     (merged, median_lead, p90_lead, reviewed, median_wait), = run(

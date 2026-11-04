@@ -20,6 +20,11 @@ def load_trend(start, end, include_bots, grain):
     return queries.trend(start, end, include_bots, grain)
 
 
+@st.cache_data(ttl=60)
+def load_breakdown(start, end):
+    return queries.lead_time_breakdown(start, end)
+
+
 def hours(value, digits=1):
     return "–" if value is None else f"{value:,.{digits}f} h"
 
@@ -130,3 +135,53 @@ with right:
         "like staying close to the median. Tall spikes mean a few PRs sat waiting for a long time, which the "
         "median hides."
     )
+
+st.divider()
+
+st.subheader("Where the time goes: waiting for a first review vs. in review")
+st.caption(
+    "Human-authored PRs only, whatever the bot checkbox says: bot PRs such as dependabot are not reviewed the "
+    "same way. Covers merged PRs that were reviewed before they were merged, in the date range."
+)
+b = load_breakdown(start, end)
+
+if b["split_prs"] == 0:
+    st.info("No human-authored PRs in this date range were reviewed before being merged, so there is nothing to split.")
+else:
+    import pandas as pd
+
+    share = pd.DataFrame(
+        {
+            "stage": ["Waiting for first review", "In review (first review to merge)"],
+            "share of hours (%)": [b["wait_share_pct"], b["in_review_share_pct"]],
+            "bar": ["Share of all hours", "Share of all hours"],
+        }
+    )
+    left, right = st.columns([3, 2])
+    with left:
+        st.markdown("**Share of all hours these PRs spent open**")
+        st.bar_chart(share, x="bar", y="share of hours (%)", color="stage", horizontal=True, x_label="", y_label="% of hours")
+        st.caption(
+            "Out of every hour these PRs spent open, how much was spent waiting for someone to look at them "
+            "and how much after the first review. Good looks like a small waiting share: a large one means the "
+            "work sat idle before anyone responded. This is pulled toward the slowest PRs; the table shows the "
+            "typical PR."
+        )
+    with right:
+        st.markdown("**Typical and slow PRs**")
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Stage": ["Waiting for first review", "In review (first review to merge)", "Whole lead time"],
+                    "Median (h)": [b["median_wait_hours"], b["median_in_review_hours"], b["median_lead_time_hours"]],
+                    "p90 (h)": [b["p90_wait_hours"], b["p90_in_review_hours"], b["p90_lead_time_hours"]],
+                }
+            ).round(1),
+            hide_index=True,
+            width="stretch",
+        )
+        st.caption(
+            f"Based on {b['split_prs']:,} PRs. {b['not_split_prs']:,} merged human PRs had no review before they "
+            "were merged and are left out, since there is no first review to split at. The two medians do not "
+            "add up to the median of the whole, because the median of a sum is not the sum of medians."
+        )
