@@ -15,6 +15,67 @@ agent (Google Gemini) that answers plain-English questions about these metrics
 through a small set of read-only tools, with guardrails enforced in code and an
 eval set scored against SQL ground truth.
 
+## Key findings
+
+**Scope.** Pull requests on `encode/httpx` created from 2023-01-01, pulled from GitHub
+on 2026-11-01: 523 PRs, 288 merged, 835 reviews. *Lead time* is PR opened to PR
+merged (not commit to production), and a merge is used as a proxy for a deployment,
+because the PR data has no deployment events. "Human" means the author login does
+not end in `[bot]`. These findings describe what the GitHub data shows; they don't
+explain why. Every number comes from a query in
+[`analyses/key_findings.sql`](./analyses/key_findings.sql), and a test re-runs them.
+
+**1. Merging has almost stopped, but pull requests keep arriving and piling up.**
+Human PRs merged per year went 88 (2023), 92 (2024), 26 (2025), 1 (2026, whose last
+merge was on 2026-02-23), while human PRs opened went 123, 159, 108, 29. Of the 123
+opened in 2023, 72% were merged; of the 108 opened in 2025, 22% were, and 36 are still
+open. Today 73 human PRs are open, with a median age of 372 days: 39 are older than a
+year and 45 have never had a review. Seven human PRs have been opened since the last
+merge. The median lead time of the PRs that *were* merged barely moved (29.4, 23.2, 22.8
+and 23.4 hours), so what changed is how many PRs get merged, not how fast. Lead time
+only counts merged PRs, so it cannot see the ones that waited and never merged. The data
+can't say why merging slowed; the maintainers may be merging somewhere else.
+
+**2. Fewer merged PRs get a review first.** Of the human PRs merged each year, the share
+reviewed before the merge fell from 100% in 2023 (88 of 88) to 82.6% in 2024 (76 of 92)
+and 69.2% in 2025 (18 of 26). Of the 24 human merges with no review beforehand, 22 were
+PRs by one author. This counts formal GitHub reviews; discussion in plain comments is not
+counted, and 2025 is a small sample.
+
+**3. The slow part is waiting for the first review, not the review itself.** For the 183
+human PRs that were reviewed before merging, the median wait for a first review was 6.9 h
+and the median time from first review to merge only 0.6 h; 54.6% were merged within an
+hour of their first review. The wait makes up 55.9% of all the hours these PRs spent open.
+60.7% got a first review within a day and 86.9% within a week. By merge year the median
+wait was 3.6 h (2023, 88 PRs), 7.3 h (2024, 76 PRs) and 191.8 h (2025, only 18 PRs, and
+only PRs that were eventually reviewed and merged, so those still waiting aren't in it).
+
+**4. A headline lead-time number misleads unless it is a median, and bots are shown
+separately.** The typical merged PR takes 20.6 h: 52.4% were merged within a day and 81.3%
+within a week. But 23 PRs (8%) took more than 30 days, and the slowest tenth of PRs
+account for 77.8% of all lead-time hours, so the mean is 235.6 h and the 90th percentile
+483.0 h. The first dashboard headlined 260.8 h (an average of daily averages), about 13
+times the median. Bots opened 81 of the 288 merged PRs (28%; 40.9% in 2023, 15.6% in 2024,
+10.3% in 2025) and they merge faster: median 15.9 h and p90 114.5 h, against 24.2 h and
+789.7 h for humans. Leaving bots out moves the whole-period median from 20.6 h to 24.2 h
+and the p90 from 483.0 h to 789.7 h.
+
+**5. Review work is concentrated in very few people.** Of the 335 PRs that were reviewed
+by someone other than their author (by 61 different people), the top reviewer reviewed
+158 (47.2%), the top three reviewed 246 (73.4%) and the top five 291 (86.9%). The top
+reviewer also gave 136 of the 330 approvals (41.2%).
+
+**What an engineering manager could do with this** (suggestions, not conclusions: the data
+shows association, not cause):
+
+1. **Triage the backlog and track waiting time, not average lead time.** Assign or close
+   the 73 open human PRs, starting with the 39 older than a year and the 45 never reviewed,
+   then watch open-PR age and time to first review each week. Finding 3 says the wait for a
+   first look is the part that is slow, and finding 4 says an average hides it.
+2. **Require a review before merging, and spread the reviewing.** Turn on required reviews
+   for the main branch and add one or two regular reviewers, so one person isn't the
+   reviewer of nearly half the PRs (finding 5) while coverage slips (finding 2).
+
 ## Architecture
 
 ```mermaid
