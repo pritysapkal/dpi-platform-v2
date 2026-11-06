@@ -79,7 +79,46 @@ A tool-calling Gemini agent in `agent/` that answers plain-English questions abo
 - [x] **Agent unit tests** (201 when this was written, 230 now) pass with no API key in about 8 s (measured 2026-11-06; the earlier figure was about 6 s): guardrails, period resolution, tools against the real DB, the agent loop with a fake model (including the date check), the retry/fallback client with a fake SDK, and the scorer.
 - [ ] Step 5 (Streamlit chat page + MCP server) — deferred; optional.
 
+## Phase 1: dimensional model, one definition per metric, dashboard rebuild, findings (2026-11-01 to 2026-11-06)
+Goal: stop quoting an average of daily averages as the headline, give every metric one definition at PR grain, and make the dashboard and agent show the same numbers. Done in small commits, each leaving `dbt build` and the tests green.
+
+**Step 0: security and data foundation**
+- [x] Secret scan of all 12 commits that existed then: no key-shaped strings, no `.env`/credential files ever tracked, and the tracked eval run files contain no credential patterns. (Only reachable commits were scanned, not old unreachable objects.)
+- [x] `fetch_prs.py`: `main()` guard, explicit timeouts, `get_with_retry` (backoff on 429/5xx and on secondary rate limits, fails fast on other 4xx), review pagination, a `_loaded_at` UTC column on both raw tables (passed through staging), and a window of every PR created since `START_DATE = 2023-01-01` with de-duplication across pages. 32 offline tests in `ingestion_tests/` use fake HTTP responses.
+- [x] Data is now 523 PRs (288 merged) and 835 reviews, pulled 2026-11-01 (was 500 PRs and 778 reviews). Newest merge 2026-02-23. Test expectations that moved were recomputed from the raw tables, not loosened (merged total 269 to 288, 2023 merges 130 to 149). Eval ground truth is SQL, so only the stored eval runs went stale.
+- [x] CI: concurrency group with `cancel-in-progress`, runs on push to `main` and on pull requests only.
+
+**Step 1: dimensional model**
+- [x] `fct_pull_requests` (one row per PR, with `is_bot`, `was_reviewed_before_merge`, `data_as_of`), `dim_contributors` (232 logins), `dim_date` (1,461 days, built from the time spine), and `mart_dora_metrics_daily` rebuilt on the fact table. The rebuilt mart is identical to the old one row for row, same name and columns, with a warning not to use its average lead time.
+- [x] 8 models and 61 tests (`dbt build` PASS=69): relationships, `accepted_values` (including `PENDING`), and singular tests for mart-equals-fact and `dim_date`. Each new test was run against deliberately corrupted copies of the database and failed as intended.
+
+**Step 2: metrics defined once**
+- [x] MetricFlow: one PR-grain semantic model on the fact table with `deployment_frequency` and lead time as median, p90 and PR-weighted mean, filterable by `is_bot`. Median and p90 run natively on DuckDB (`PERCENTILE_CONT`) and match plain SQL on the raw tables. The average-of-daily-averages metric was removed.
+- [x] Agent: reads `fct_pull_requests` (whitelisted, with `int_pr_lifecycle` kept), reports p90, takes `include_bots`, returns `data_as_of`, and no longer has the day-weighted figure. The prompt now says to report p90, state whether bots are included, and date "currently" figures. Eval ground truth reads the fact table and gives identical values.
+- [x] Acceptance check for 2024, through `mf query`, the agent and the real dashboard app: **109 merged PRs, median 23.91 h, p90 495.83 h** with bots, and **92 PRs, 23.18 h, 697.91 h** humans only.
+
+**Step 3: dashboard rebuilt** (`dashboard/app.py`, SQL in `dashboard/queries.py`)
+- [x] Date range and "Include bot PRs" (off by default); tiles for merged PRs, median and p90 lead time, review coverage and median time to first review, with "Data as of"; weekly or monthly trends; waiting-for-first-review versus in-review breakdown (human PRs); review funnel; open-PR age measured to `data_as_of`; top reviewers (distinct PRs, own-PR comments excluded) and top authors. A caption under every chart. "Days Tracked" and the daily lines are gone.
+- [x] 153 dashboard tests: every figure checked against separate SQL on the raw tables, the real app run headlessly with Streamlit's `AppTest`, and edge cases (empty ranges, one date picked, no open PRs).
+
+**Step 4: findings and docs**
+- [x] README "Key findings" (five findings, two recommendations, scope and caveats stated), with the SQL in `analyses/key_findings.sql`. `dashboard/tests/test_findings.py` re-runs those queries and checks that every number in the README matches, and that no individual is named.
+- [x] README architecture, data dictionary, tests, semantic layer, dashboard and agent sections updated. The `since` claim was wrong: the pull-request list endpoint ignores it (tested with a far-future value), so incremental loading must sort by `updated` and stop early.
+- [x] `dbt-metricflow` and `streamlit` added to the root `requirements.txt`; a from-scratch dry-run resolves to exactly the tested versions.
+
+**Final state (checked 2026-11-06 on commit 6b2933c):** `dbt build` PASS=69, WARN=0, ERROR=0 (8 models, 61 tests); `mf validate-configs` 0 errors, 0 future errors, 0 warnings; **415 tests pass** (agent 230, ingestion 32, dashboard 153).
+
+**Problems met along the way**
+- The CI `GH_TOKEN` secret was rejected (HTTP 401) for a few runs, so CI failed at the fetch step; the code was not at fault, and the new retry logic correctly refused to retry a 401. Later runs were green.
+- Several of my own first-draft tests were too weak or wrong (an assertion ending in `or True`, a hard-coded chart count, a mis-named test); each was caught on review and fixed.
+
+**Still open from Phase 1**
+- The live eval has **not** been re-run since the data, tool and prompt changes. `agent/evals/results.md` and the README eval table still show the old run and say so.
+- "Median time to first review" is computed slightly differently on the dashboard tile, in the lead-time breakdown and in the agent's eval; only lead time is defined once in MetricFlow.
+- CI still fetches live data and does not run any pytest suite (Phase 2).
+
 ## Next Immediate Step
-- Re-run the eval on gemini-3.8-flash once it stops returning 503: `python -m agent.evals.run_evals --model gemini-3.8-flash` (resumable; fills in the pending column in agent/evals/results.md and the README table)
-- Regenerate the Gemini API key before publishing the repo (the current one was pasted into a chat)
-- Review README.md tone/wording to make sure it reads as your own voice, not mine (now including the DPIP Agent section)
+- Put a **new** Gemini key in `agent/.env` (the old one was pasted into a chat), then run the live eval once, `python -m agent.evals.run_evals --fresh` on the default model, and update `agent/evals/results.md` and the README eval table. This is also the only way to check that the model follows the new prompt rules (p90, bot status, `data_as_of`).
+- Decide whether to add eval questions for the new abilities (humans-only median, p90) before the planned expansion to about 35 questions.
+- Read the README findings once and adjust the tone so it sounds like you.
+- Not started: Phase 2 (source freshness, a dbt unit test, a model contract, the CI split with fixture data, a public deploy from a Parquet snapshot, agent evals on the default model) and Phase 3 (incremental loading, BigQuery, Power BI).
