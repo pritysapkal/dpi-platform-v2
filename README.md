@@ -80,70 +80,165 @@ shows association, not cause):
 
 ```mermaid
 flowchart LR
-    S["Source<br/>GitHub REST API<br/>(encode/httpx)"] --> I["Ingestion<br/>fetch_prs.py"]
-    I --> W[("Warehouse<br/>DuckDB — raw schema<br/>github_pull_requests, github_pr_reviews")]
-    W --> ST["Staging<br/>stg_github__pull_requests<br/>stg_github__pr_reviews"]
-    ST --> INT["Intermediate<br/>int_pr_lifecycle"]
-    INT --> M["Marts<br/>mart_dora_metrics_daily"]
-    M --> SEM["Semantic Layer<br/>MetricFlow<br/>deployment_frequency, lead_time_for_changes"]
-    SEM --> DASH["Dashboard<br/>Streamlit — dashboard/app.py"]
+    S["Source<br/>GitHub REST API<br/>(encode/httpx)"] --> I["Ingestion<br/>fetch_prs.py<br/>all PRs created since 2023-01-01"]
+    I --> W[("Warehouse<br/>DuckDB, raw schema<br/>github_pull_requests, github_pr_reviews<br/>every row stamped with _loaded_at")]
+    W --> ST["Staging (views)<br/>stg_github__pull_requests<br/>stg_github__pr_reviews"]
+    ST --> INT["Intermediate (view)<br/>int_pr_lifecycle"]
+    INT --> FCT["fct_pull_requests<br/>one row per PR"]
+    ST --> DIMC["dim_contributors<br/>one row per login"]
+    FCT --> DIMC
+    TS["metricflow_time_spine"] --> DIMD["dim_date<br/>one row per day"]
+    FCT --> DIMD
+    FCT --> MART["mart_dora_metrics_daily<br/>one row per day"]
+    FCT --> SEM["Semantic layer<br/>MetricFlow<br/>deployment_frequency,<br/>lead_time_median / p90 / mean"]
+    FCT --> DASH["Dashboard<br/>Streamlit, dashboard/"]
+    DIMC --> DASH
+    DIMD --> DASH
+    FCT --> AGENT["DPIP Agent<br/>agent/, Gemini"]
+    MART --> AGENT
+    INT --> AGENT
 ```
 
-- **Ingestion** (`fetch_prs.py`) — pulls the 500 most recent PRs on `encode/httpx`
-  via the GitHub REST API, plus every review on each one (one API call per PR,
-  since GitHub doesn't expose reviews in bulk), into `raw.github_pull_requests`
-  and `raw.github_pr_reviews` in a local DuckDB file.
-- **Staging** — casts types and renames columns to consistent conventions.
-  `stg_github__pr_reviews` stays one row per *review* (a PR can have zero, one,
-  or many); nothing else touches its grain.
-- **Intermediate** (`int_pr_lifecycle`) — the important join. Reviews are rolled
+- **Ingestion** (`fetch_prs.py`) — pulls every PR created on or after `START_DATE`
+  (2023-01-01) from the GitHub REST API, newest first, plus every review on each
+  one (one call per PR, more if it has over 100 reviews, since GitHub doesn't
+  expose reviews in bulk), into `raw.github_pull_requests` and
+  `raw.github_pr_reviews` in a local DuckDB file. Every request has a timeout and
+  retries 429s, 5xx errors and rate-limit responses with backoff; every row is
+  stamped with `_loaded_at` (UTC, one value per run). It is a full refresh each run:
+  523 PRs is about 530 API calls.
+- **Staging** (views) — casts types and renames columns to consistent conventions,
+  and passes `_loaded_at` through. `stg_github__pr_reviews` stays one row per
+  *review* (a PR can have zero, one, or many); nothing else touches its grain.
+- **Intermediate** (`int_pr_lifecycle`, view) — the important join. Reviews are rolled
   up to one row per PR *first* (`min`/`max`/`count` over `submitted_at`), then
   left-joined onto the PR base, so the grain never fans out. Computes
   `review_wait_hours`, `time_in_review_hours`, and `lead_time_hours`.
-- **Marts** (`mart_dora_metrics_daily`) — aggregates merged PRs to one row per
-  calendar day, on a full date spine so zero-merge days are `0`, not a missing
-  row.
-- **Semantic layer** — `deployment_frequency` and `lead_time_for_changes`
-  defined as MetricFlow metrics on top of the mart, queryable via `mf query`
-  instead of being hardcoded SQL.
-- **Dashboard** (`dashboard/app.py`) — a single-page Streamlit app that reads
-  `mart_dora_metrics_daily` directly out of `dev.duckdb`, read-only. No BI
-  tool, no data copy — see [Dashboard](#dashboard) below for why.
+- **Marts** (tables):
+  - `fct_pull_requests` — one row per PR, the one place every PR-level metric is
+    calculated. Adds `is_bot`, `was_reviewed_before_merge` and `data_as_of`.
+  - `dim_contributors` — one row per GitHub login (authors and reviewers).
+  - `dim_date` — one row per calendar day, built from `metricflow_time_spine`.
+  - `mart_dora_metrics_daily` — one row per calendar day, on a full date spine so
+    zero-merge days are `0`, not a missing row. Now built from the fact table. Use it
+    for per-day merge counts only, not for lead time.
+- **Semantic layer** — one PR-grain MetricFlow semantic model on `fct_pull_requests`:
+  `deployment_frequency` and lead time as median, p90 and PR-weighted mean, queryable
+  with `mf query` and filterable by `is_bot`. See [Semantic layer](#semantic-layer).
+- **Dashboard** (`dashboard/`) — a Streamlit app that reads the fact table and the two
+  dimensions from `dev.duckdb`, read-only. See [Dashboard](#dashboard).
+- **Agent** (`agent/`) — a tool-calling LLM agent that answers questions from the same
+  tables. See [DPIP Agent](#dpip-agent).
 
-## Data dictionary — `mart_dora_metrics_daily`
+## Data dictionary
+
+### `fct_pull_requests` — one row per pull request (523 rows)
 
 | Column | Type | Description |
 |---|---|---|
-| `metric_date` | date | One row per calendar day. Primary key — spans the full range from the first to the most recent merge, with no gaps. |
-| `deployment_frequency` | integer | Count of PRs merged on this day. A PR merge is used as a proxy for a deployment — see [Known limitations](#known-limitations--what-id-do-at-scale). Never null; `0` on days with no merges. |
-| `avg_lead_time_hours` | float | Average `lead_time_hours` (PR opened → merged) across PRs merged this day, rounded to 2 decimals. **Null**, not `0`, on zero-merge days — there's nothing to average. |
+| `pr_number` | bigint | PR number. Primary key. |
+| `pr_title` | varchar | PR title. Written by GitHub users, so treat it as untrusted text. |
+| `pr_state` | varchar | GitHub's state: `open` or `closed` (a merged PR is `closed`). |
+| `pr_lifecycle_stage` | varchar | `merged`, `closed_without_merge` or `open`. |
+| `is_merged` | boolean | True when the PR was merged. |
+| `author_login` | varchar | GitHub login of the author. |
+| `is_bot` | boolean | True when the author login ends in `[bot]` (for example `dependabot[bot]`). |
+| `opened_at`, `first_reviewed_at`, `last_reviewed_at`, `merged_at`, `closed_at` | timestamp | When the PR was opened, first and last reviewed, merged and closed (UTC). Null when it did not happen. |
+| `review_count`, `distinct_reviewer_count` | bigint | Reviews on the PR, and how many different people left them. |
+| `was_approved`, `had_changes_requested` | boolean | At least one `APPROVED` / `CHANGES_REQUESTED` review. |
+| `was_reviewed` | boolean | At least one review, at any time. |
+| `was_reviewed_before_merge` | boolean | Merged, and the first review came at or before the merge. A comment left after the merge doesn't count. Basis of review coverage. |
+| `review_wait_hours` | double | Hours from opening to the first review. Null if never reviewed. |
+| `time_in_review_hours` | double | Hours from the first review to the merge. Null if not merged, or if the only review came after the merge. |
+| `lead_time_hours` | double | Hours from opening to merge. Null if not merged. **The lead-time metric is calculated from this column.** |
+| `data_as_of` | timestamp | When the data was pulled from GitHub (UTC), the same on every row. Anything "as of now", such as how long a PR has been open, is measured against this, not today's date. |
+
+### `dim_contributors` — one row per GitHub login (232 rows)
+
+| Column | Type | Description |
+|---|---|---|
+| `contributor_login` | varchar | GitHub login of someone who authored a PR or left a review. Primary key. |
+| `is_bot` | boolean | Login ends in `[bot]`. |
+| `first_activity_at`, `last_activity_at` | timestamp | Earliest and latest time they opened a PR or submitted a review. |
+| `prs_authored` | bigint | PRs opened (any state). 0 for people who only review. |
+| `reviews_given` | bigint | Reviews submitted, of any kind, including comments on their own PRs. |
+| `prs_reviewed` | bigint | Distinct PRs they reviewed. |
+
+### `dim_date` — one row per calendar day, 2023-01-01 to the end of the year the data was pulled
+
+| Column | Type | Description |
+|---|---|---|
+| `date_day` | date | The day. Primary key. |
+| `year`, `quarter`, `month_number`, `day_of_week_number` | bigint | Calendar year, quarter (1 to 4), month (1 to 12) and ISO weekday (1 = Monday). |
+| `month_name`, `day_name` | varchar | English names. |
+| `month_start_date`, `week_start_date` | date | First day of the month, and the Monday of the week. Axis values for monthly and weekly trends. |
+| `is_weekend` | boolean | Saturday or Sunday. |
+
+### `mart_dora_metrics_daily` — one row per calendar day
+
+| Column | Type | Description |
+|---|---|---|
+| `metric_date` | timestamp | One row per calendar day. Primary key — spans the full range from the first to the most recent merge, with no gaps. |
+| `deployment_frequency` | bigint | Count of PRs merged on this day. A PR merge is used as a proxy for a deployment — see [Known limitations](#known-limitations--what-id-do-at-scale). Never null; `0` on days with no merges. |
+| `avg_lead_time_hours` | double | Average `lead_time_hours` across PRs merged this day, rounded to 2 decimals. **Null**, not `0`, on zero-merge days. **Do not use it for headline lead time:** averaging it over several days gives an average of daily averages, which is dominated by a few very slow PRs. Use the median or p90 from `fct_pull_requests`. |
 
 ## dbt tests
 
-Every model's primary key gets standard `unique`/`not_null` tests. On top of
-that, `int_pr_lifecycle` has a custom `non_negative` generic test
-([`macros/generic_tests.sql`](./macros/generic_tests.sql)) on two columns:
+`dbt build` runs 8 models and **61 tests**, in dependency order. Every model's primary
+key gets `unique` and `not_null`; on top of that:
+
+| Model | Beyond the primary key |
+|---|---|
+| `stg_github__pull_requests` | `not_null` on `_loaded_at`. |
+| `stg_github__pr_reviews` | `relationships` (every review belongs to a PR in the data), `accepted_values` on `review_state` (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`, `PENDING`), `not_null` on `_loaded_at`. |
+| `int_pr_lifecycle` | custom `non_negative` on `review_wait_hours` and `lead_time_hours`. |
+| `fct_pull_requests` | `accepted_values` on `pr_state` and `pr_lifecycle_stage`, `not_null` on the flags and on `data_as_of`, `non_negative` on `lead_time_hours`, and a `relationships` test that every `author_login` exists in `dim_contributors`. |
+| `dim_contributors` | `not_null` on every column, `non_negative` on the three counts. |
+| `dim_date` | `accepted_values` on quarter, month and weekday, plus two singular tests: no gaps in the calendar, and every date a PR was opened or merged exists in it. |
+| `mart_dora_metrics_daily` | `non_negative` on `deployment_frequency`, plus a singular test that the mart's total merges equal the merged-PR count in `fct_pull_requests`. |
+| `metricflow_time_spine` | `unique` and `not_null` on `date_day`. |
 
 | Test | What it actually catches |
 |---|---|
-| `non_negative` on `review_wait_hours` | Both durations are `date_diff(...)` between two timestamps pulled from the GitHub API. A negative value can only mean a timestamp parsing bug or a genuine source-data anomaly (e.g. clock skew). This exact class of bug showed up during development — a review submitted 56 days *after* its PR had already merged initially produced a negative `time_in_review_hours` before the model was fixed to guard it. |
-| `non_negative` on `lead_time_hours` | Same failure mode, but on the column that feeds the Lead Time for Changes DORA metric directly — if this ever went negative, it would silently corrupt the mart and the semantic layer metric built on top of it. |
+| `non_negative` on `review_wait_hours`, `lead_time_hours` | Both durations are `date_diff(...)` between two timestamps pulled from the GitHub API. A negative value can only mean a timestamp parsing bug or a genuine source-data anomaly (e.g. clock skew). This exact class of bug showed up during development — a review submitted 56 days *after* its PR had already merged initially produced a negative `time_in_review_hours` before the model was fixed to guard it. |
+| `relationships` on reviews, and fact to dimension | A fetch that loses PRs, or a window change, would leave reviews pointing at PRs that aren't there, and every PR must have a row in the contributor dimension. |
+| `accepted_values` on `review_state` | If GitHub introduces a new review state, the build flags it instead of letting it slip silently into the funnel and coverage numbers. |
+| mart merges = fact merges | A join or filter that drops or duplicates PRs between the fact table and the daily mart. |
+| `dim_date` gaps and coverage | A calendar that stopped short of the data would silently drop PRs from any chart that joins to it. |
 
-Run `dbt build` to run every model and every test in dependency order.
+The `relationships`, `accepted_values` (on `review_state`), mart-versus-fact and `dim_date`
+tests were each run against deliberately corrupted copies of the database while building
+them, and failed as intended.
+
+**Not covered yet:** source freshness checks (the raw tables now carry `_loaded_at`, so
+they can be added), dbt unit tests, and model contracts.
 
 ## Semantic layer
 
 ```
 mf list metrics
-mf query --metrics deployment_frequency,lead_time_for_changes --group-by metric_time__month
+mf query --metrics deployment_frequency,lead_time_median_hours,lead_time_p90_hours --group-by metric_time__year
+mf query --metrics lead_time_median_hours --group-by metric_time__year \
+  --where "{{ Dimension('pull_request__is_bot') }} = false"
 ```
 
-**Known caveat, by design:** `lead_time_for_changes` is defined as an
-`average` measure over `mart_dora_metrics_daily.avg_lead_time_hours`, which is
-*already* a daily average. That makes the metric an average of daily averages
-(each day weighted equally), not a true PR-weighted average across all merges.
-Building the semantic model on the pre-aggregated mart (rather than on
-`int_pr_lifecycle` at PR grain) was a deliberate scope tradeoff — see below.
+One semantic model, `pull_requests`, sits on `fct_pull_requests` at PR grain, with
+`merged_at` as its time dimension and `is_bot` as a dimension. Four metrics, all over
+merged PRs:
+
+| Metric | Definition |
+|---|---|
+| `deployment_frequency` | Number of PRs merged (a merge is the proxy for a deployment). |
+| `lead_time_median_hours` | Median hours from opened to merged. The headline figure. |
+| `lead_time_p90_hours` | 90th percentile (continuous), so 9 in 10 merged PRs were faster. |
+| `lead_time_mean_hours` | PR-weighted mean, shown only for comparison: a few very slow PRs pull it far above the median. |
+
+Median and p90 run natively on DuckDB (MetricFlow generates `PERCENTILE_CONT(0.9) WITHIN
+GROUP (...)`), and were checked against plain SQL on the raw tables. The earlier
+lead-time metric, an average of the mart's daily averages, was removed so it can't be
+quoted. The dashboard and the agent compute the same numbers from the same table: for
+2024, `mf query`, the agent's `get_dora_metrics` and the dashboard all give 109 merged
+PRs with a median of 23.91 h (humans only: 92 PRs, 23.18 h).
 
 ## Dashboard
 
@@ -159,8 +254,23 @@ warehouse, don't duplicate it." The classic open-source, DuckDB-native
 version of Evidence still exists on npm, but its docs have been fully
 replaced by the new product's, so standing it up would mean reverse-engineering
 undocumented config from source rather than following a supported path. Given
-that, a ~70-line Streamlit script reading DuckDB directly was the more
-reliable choice for something this small.
+that, a Streamlit app reading DuckDB directly was the more
+reliable choice.
+
+**What it shows.** A sidebar date range and an "Include bot PRs" checkbox (off by
+default) apply to the charts. Every figure is computed over individual PRs, with the
+median and p90 as the headline, never an average of daily averages. Each chart has a
+caption saying what it shows and what "good" looks like.
+
+- **Tiles:** merged PRs, median and p90 lead time, review coverage (merged PRs reviewed
+  before the merge) and median time to first review, with "Data as of" from `data_as_of`.
+- **Trends:** PRs merged, median lead time and p90 lead time per week or month.
+- **Where the time goes:** waiting for a first review versus time in review, for human PRs.
+- **Review funnel:** opened, reviewed, approved, merged, with a note that it isn't a
+  strictly nested funnel (some PRs merge with no review).
+- **Open PRs:** how long they have been waiting, measured to `data_as_of`, not today.
+- **Who reviews and who writes:** top reviewers (by distinct PRs of others reviewed) and
+  top authors, people only.
 
 **Running it:**
 
@@ -173,6 +283,11 @@ streamlit run app.py
 Opens at http://localhost:8501. Connects read-only, so it's safe to leave
 running while `dbt build` runs elsewhere (results refresh within 60 seconds).
 
+**Tests:** `python -m pytest dashboard/tests` (needs `dev.duckdb`). The expected numbers
+are recomputed from the raw tables with separate SQL, the real app is run headlessly with
+Streamlit's `AppTest` (with bots on and off, and for 2024), and the findings tests check
+that the README's numbers match the data.
+
 ## Known limitations / what I'd do at scale
 
 - **Deployment Frequency is a proxy.** There's no real deployment/release event
@@ -182,16 +297,21 @@ running while `dbt build` runs elsewhere (results refresh within 60 seconds).
 - **Lead Time for Changes measures PR-open-to-merge, not commit-to-production.**
   The full DORA definition is commit-to-production. At scale this would need
   commit timestamps and deploy timestamps, not just PR timestamps.
-- **The semantic layer sits on a pre-aggregated mart, not PR grain.** As noted
-  above, this makes `lead_time_for_changes` an average of daily averages. At
-  scale, I'd build the semantic model on `int_pr_lifecycle` directly so
-  MetricFlow can compute a true PR-weighted average and support slicing by
-  author/reviewer/etc. that a daily mart can't offer.
-- **Full refresh, not incremental.** `fetch_prs.py` re-pulls the most recent
-  500 PRs every run, and every dbt model fully rebuilds. Fine at this scale
-  (500 rows, sub-second rebuilds); wouldn't scale to a repo with 50,000+ PRs.
-  At scale: incremental ingestion (GitHub's `since` param) and incremental dbt
-  materializations keyed on `updated_at`.
+- **Only lead time is defined once in the semantic layer.** "Median time to first
+  review" is computed slightly differently on the dashboard tile (merged PRs reviewed
+  before the merge, by merge date), in the lead-time breakdown, and in the agent's eval
+  question (PRs opened in a year that got any review). Each is documented where it
+  appears, but a MetricFlow metric would unify them.
+- **Full refresh, not incremental.** `fetch_prs.py` re-pulls every PR created since
+  2023-01-01 on each run (523 PRs, about 530 API calls), and every dbt model fully
+  rebuilds. Fine at this scale; wouldn't scale to a repo with 50,000+ PRs. At scale:
+  incremental ingestion and incremental dbt materializations keyed on `updated_at`.
+  GitHub's pull-request list endpoint has no `since` parameter (I checked: passing a
+  far-future `since` returns the same PRs), so the way to do it is to sort by `updated`,
+  newest first, and stop paging once you reach PRs older than the last run, with a
+  lookback window for late changes.
+- **History before 2023 isn't loaded.** The window is a constant at the top of
+  `fetch_prs.py`, so every year in the data is complete, but older history is missing.
 - **One data source, on purpose.** This project deliberately covers PRs and
   reviews only, not commits, issues, or CI/CD workflow data — one entity done
   deeply rather than several done shallowly. A production DORA implementation
@@ -218,11 +338,22 @@ running while `dbt build` runs elsewhere (results refresh within 60 seconds).
 ```
 pip install -r requirements.txt
 export GH_TOKEN=your_github_pat        # any public-repo-read token works
-python fetch_prs.py                    # pulls fresh PR + review data
+python fetch_prs.py                    # pulls every PR since 2023-01-01 plus reviews (about 530 API calls)
 dbt build                              # runs every model + test
-mf list metrics                        # semantic layer, once dbt-metricflow is installed
-cd dashboard && pip install -r requirements.txt && streamlit run app.py   # dashboard, see below
+mf list metrics                        # semantic layer
+cd dashboard && pip install -r requirements.txt && streamlit run app.py   # dashboard
 ```
+
+Tests (each needs `dev.duckdb`, built by the steps above, except where noted):
+
+```
+python -m pytest ingestion_tests       # fetch_prs.py with fake HTTP responses, no network or token
+python -m pytest agent/tests           # the agent, no API key needed
+python -m pytest dashboard/tests       # dashboard numbers, the real app, and the README's findings
+```
+
+On Windows, `mf` needs `PYTHONIOENCODING=utf-8` and `DBT_PROFILES_DIR` pointing at the folder
+with your `profiles.yml`.
 
 ## DPIP Agent
 
@@ -233,8 +364,8 @@ python -m agent.cli "What was the median lead time in 2024 and how does it compa
 ```
 
 It answers only from tool results, quotes the actual numbers and the date range
-used, and says "I don't have data for that" instead of guessing. Nothing in the
-dbt project changed; the agent only reads `dev.duckdb`.
+used, and says "I don't have data for that" instead of guessing. It only reads
+`dev.duckdb`, through a read-only connection.
 
 ### Architecture
 
@@ -267,12 +398,12 @@ is unit-tested offline with a scripted fake model.
 
 | Tool | What it does |
 |---|---|
-| `list_tables()` | The two tables the agent may query, with descriptions. |
+| `list_tables()` | The three tables the agent may query, with descriptions. `fct_pull_requests` is the preferred one; the mart's description warns not to use its average lead time. |
 | `get_schema(table_name)` | Columns and types of one allowed table. |
-| `get_data_coverage()` | Repo, first and last date with data, PR counts, which metrics exist. |
+| `get_data_coverage()` | Repo, first and last date with data, PR counts, `data_as_of` (when the data was pulled, so "currently open" is as of then), which metrics exist. |
 | `resolve_period(phrase)` | Turns "last quarter", "this year", "last 30 days", "Q1 2025", "October 2024" and similar into exact dates **in Python** ([`agent/periods.py`](./agent/periods.py)), and says whether DPIP has data for them. Unrecognised phrases return an error, never a guess. |
-| `get_dora_metrics(start_date, end_date, repo=None, period=None)` | Deployment frequency (merged PRs, total and per week) and lead time: **median** as the headline (PR lead times are heavily skewed), PR-weighted mean, and the dashboard's day-weighted average, labelled as such. Takes either explicit dates or a `period` phrase resolved in code (not both). Change failure rate is returned as "not available". |
-| `compare_periods(a_start, a_end, b_start, b_end, repo=None, period_a=None, period_b=None)` | Both periods side by side, with % change. Each side takes dates or a phrase. |
+| `get_dora_metrics(start_date, end_date, repo=None, period=None, include_bots=True)` | Deployment frequency (merged PRs, total and per week) and lead time: **median** as the headline (PR lead times are heavily skewed), **p90** and the PR-weighted mean, all from `fct_pull_requests`, so they equal the MetricFlow metrics. `include_bots=false` counts human-authored PRs only. Takes either explicit dates or a `period` phrase resolved in code (not both). Change failure rate is returned as "not available". |
+| `compare_periods(a_start, a_end, b_start, b_end, repo=None, period_a=None, period_b=None, include_bots=True)` | Both periods side by side, with % change in count, median, p90 and mean. Each side takes dates or a phrase. |
 | `run_readonly_sql(query)` | Free-form SELECT for anything the other tools can't answer (per-author counts, review stats, monthly breakdowns). |
 
 Every tool returns a dict and never raises: problems come back as
@@ -287,7 +418,7 @@ tool call goes through these checks, however the model decided to make it.
 |---|---|
 | **Database opened `read_only=True` with `enable_external_access=False`** | The last line of defence. Even a query that got past every check below can't write, attach another database, read files (`read_csv`, `glob`) or install extensions. Tests run these statements straight against the connection to prove it. |
 | **DuckDB's own parser as the main SQL check** (`json_serialize_sql`) | A real parser instead of guessing from text. It only serializes SELECTs, so any write, `PRAGMA` or second statement fails. The whole parse tree is walked, so tables hidden in subqueries, JOINs, UNIONs and nested CTEs are all found. |
-| **Table whitelist**: only `mart_dora_metrics_daily` and `int_pr_lifecycle` | The agent sees the curated outputs of the dbt project, not raw or staging data. |
+| **Table whitelist**: only `fct_pull_requests`, `mart_dora_metrics_daily` and `int_pr_lifecycle` | The agent sees the curated outputs of the dbt project, not raw, staging or the `dim_*` tables. |
 | **CTE names may not match a real table** | A bypass found while building this: in DuckDB, `WITH stg_x AS (SELECT * FROM stg_x)` reads the *real* `stg_x` inside the CTE body. A whitelist that simply skipped CTE names would have let it through. |
 | **No table functions** | `read_csv`, `glob`, `query()` and `duckdb_tables()` can read files or metadata. Two analytics tables don't need any of them. |
 | **Regex check as a second layer** | Must start with SELECT/WITH, only one statement, no write or admin keywords (after removing comments and strings). It catches `SHOW`, `DESCRIBE` and `SUMMARIZE`, which DuckDB parses as SELECTs. |
@@ -307,7 +438,7 @@ pip install -r agent/requirements.txt
 cp agent/.env.example agent/.env          # then paste a key from https://aistudio.google.com/apikey
 python -m agent.cli "Which month had the most merged pull requests?"
 python -m agent.cli --model gemini-3.5-flash-lite --sticky-fallback "..."
-python -m pytest agent/tests -v           # 201 tests, no API key needed
+python -m pytest agent/tests -v           # 230 tests, no API key needed
 python -m agent.evals.run_evals --model gemini-3.5-flash-lite
 ```
 
@@ -349,6 +480,12 @@ deleting it, so earlier scores stay visible. Full report:
 
 `gemini-3.8-flash` is still pending: the free tier returned 503 "high demand" all day.
 
+**These results are out of date.** They were produced before the data window, the
+tools and the prompt changed (500 PRs, a day-weighted figure, no p90 or bot option).
+The ground truth in `eval_set.json` now reads `fct_pull_requests` and was checked to give
+the same values, but the agent has **not been re-evaluated** since, so `results.md`
+still shows the old run.
+
 ### Known limitations / failure cases
 
 These come from what actually happened during development and the eval runs.
@@ -384,7 +521,8 @@ These come from what actually happened during development and the eval runs.
   details aren't caught.
 - **"Currently" means "as of the last data pull".** For "How many PRs are
   currently open?" the agent correctly answered 76, but didn't say that's as of
-  the snapshot, not today.
+  the snapshot, not today. The prompt now asks it to say so, and `get_data_coverage`
+  returns `data_as_of`; not yet re-evaluated.
 - **Tool calls aren't always efficient.** Two answers (q07, q09) used 5 of the
   6 allowed calls, partly on `list_tables`/`get_schema` exploration the system
   prompt could make unnecessary. After the period fix the model also sometimes
