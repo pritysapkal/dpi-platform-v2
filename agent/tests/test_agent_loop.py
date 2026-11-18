@@ -252,7 +252,7 @@ def test_model_error_becomes_error_result(tracer):
 # ---------- GeminiClient retry / fallback (fake SDK, no network) ----------
 
 def api_error(code: int, retry_after: str | None = None, retry_delay: str | None = None) -> errors.APIError:
-    status = {429: "RESOURCE_EXHAUSTED", 500: "INTERNAL", 503: "UNAVAILABLE"}.get(code, "ERROR")
+    status = {429: "RESOURCE_EXHAUSTED", 500: "INTERNAL", 503: "UNAVAILABLE", 504: "DEADLINE_EXCEEDED"}.get(code, "ERROR")
     body = {"error": {"code": code, "message": "test", "status": status, "details": []}}
     if retry_delay:
         body["error"]["details"].append({"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": retry_delay})
@@ -290,7 +290,7 @@ def make_client(script, fallback=None):
     return client, sdk, sleeps, events
 
 
-@pytest.mark.parametrize("code", [429, 500, 503])
+@pytest.mark.parametrize("code", [429, 500, 503, 504])
 def test_transient_errors_are_retried(code):
     client, sdk, sleeps, _ = make_client({"primary": [api_error(code), api_error(code), ok_response()]})
     turn = client.generate([])
@@ -314,6 +314,32 @@ def test_retries_stop_after_max_attempts_without_fallback():
         client.generate([])
     assert len(sdk.calls) == llm.MAX_ATTEMPTS == 5
     assert len(sleeps) == 4
+
+
+def test_504_deadline_exceeded_is_retried_and_reported_with_its_own_reason():
+    # What happened on gemini-3.8-flash: the model answered 504 DEADLINE_EXCEEDED. It used to end
+    # the question on the first one ("non-retryable"); now it gets the full set of attempts.
+    client, sdk, sleeps, events = make_client({"primary": [api_error(504), api_error(504), ok_response()]})
+    turn = client.generate([])
+    assert turn.model == "primary" and sdk.calls == ["primary"] * 3 and len(sleeps) == 2
+    assert [e["reason"] for e in events if e["event"] == "retry"] == ["504 DEADLINE_EXCEEDED"] * 2
+
+
+def test_persistent_504_exhausts_retries_and_then_uses_the_fallback():
+    client, sdk, _, events = make_client(
+        {"primary": [], "primary:default": api_error(504), "backup": [ok_response()]}, fallback="backup"
+    )
+    turn = client.generate([])
+    assert sdk.calls == ["primary"] * llm.MAX_ATTEMPTS + ["backup"]
+    assert turn.model == "backup"
+    assert any(e["event"] == "fallback" and "504" in e["reason"] for e in events)
+
+
+def test_persistent_504_without_a_fallback_ends_as_retries_exhausted_not_as_a_fatal_error():
+    client, sdk, _, _ = make_client({"primary": [], "primary:default": api_error(504)})
+    with pytest.raises(llm.RetriesExhaustedError, match="504"):
+        client.generate([])
+    assert len(sdk.calls) == llm.MAX_ATTEMPTS
 
 
 def test_fallback_used_only_after_primary_exhausted_and_is_recorded():

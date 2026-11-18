@@ -15,7 +15,10 @@ from google import genai
 from google.genai import errors, types
 
 # Temporary server-side problems: worth waiting and trying again.
-TRANSIENT_STATUS_CODES = {429, 500, 503}
+# 504 DEADLINE_EXCEEDED is Gemini giving up on an overloaded model, like a 503; during an
+# eval on gemini-3.8-flash it was the most common failure, and treating it as permanent
+# ended a question on the first one.
+TRANSIENT_STATUS_CODES = {429, 500, 503, 504}
 MAX_ATTEMPTS = 5  # per model, including the first try
 BASE_DELAY_SECONDS = 2.0
 MAX_DELAY_SECONDS = 60.0
