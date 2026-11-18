@@ -445,7 +445,9 @@ python -m agent.evals.run_evals --model gemini-3.5-flash-lite
 Run everything from the project root after `dbt build`. Settings live in
 `agent/.env`:
 
-- `GEMINI_MODEL`: defaults to `gemini-3.8-flash`.
+- `GEMINI_MODEL`: defaults to `gemini-3.5-flash-lite`, which answers reliably on the free
+  tier. `gemini-3.8-flash` can be chosen with this setting, but it returned 503 and 504
+  errors when tested on 2026-11-18, so it has not been evaluated.
 - `GEMINI_FALLBACK_MODEL`: optional.
 
 The guardrail and loop tests need neither a key nor `dev.duckdb`. The tool tests
@@ -549,10 +551,12 @@ These come from what actually happened during development and the eval runs.
   outside the supported list ("since the release", "next sprint") return an
   error rather than a guess.
 - **Free-tier availability shaped the design.** `gemini-3.8-flash` returned 503
-  "high demand" for a whole day, and each failure took about 50 s to arrive.
-  That's why there's a 30 s request timeout and an optional sticky fallback,
-  and why the 3.8-flash eval column is still pending. One 503-heavy CLI run took
-  5.5 minutes before those fixes.
+  "high demand" for a whole day in October, and each failure took about 50 s to arrive.
+  That's why there's a 30 s request timeout and an optional sticky fallback. One
+  503-heavy CLI run took 5.5 minutes before those fixes. When tested again on
+  2026-11-18 it returned 503 and 504 errors on every question, which also showed that a
+  504 had been wrongly treated as permanent (now retried). That is why the default
+  model is `gemini-3.5-flash-lite`, and why the 3.8-flash eval column is not evaluated.
 - **Small, single-run eval.** 20 questions, one run per model, at temperature 0
   (which reduces but doesn't remove run-to-run variation). It catches
   regressions and compares models; it isn't a statistical benchmark.
