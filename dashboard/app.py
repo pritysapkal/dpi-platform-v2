@@ -11,6 +11,11 @@ def load_window():
 
 
 @st.cache_data(ttl=60)
+def load_activity(start, end, include_bots):
+    return queries.has_activity(start, end, include_bots)
+
+
+@st.cache_data(ttl=60)
 def load_kpis(start, end, include_bots):
     return queries.kpis(start, end, include_bots)
 
@@ -90,6 +95,18 @@ st.caption(
     + ("bot PRs included" if include_bots else "human-authored PRs only")
 )
 
+# Nothing at all in this range with these filters: say so and show nothing else, instead of a
+# page of empty charts.
+if not load_activity(start, end, include_bots):
+    if not include_bots and load_activity(start, end, True):
+        st.info(
+            "No human-authored pull request activity in this date range. Bot PRs were active in it: tick "
+            "\"Include bot PRs\" in the sidebar to see them, or widen the date range."
+        )
+    else:
+        st.info("No pull request activity in this date range. Try a wider date range.")
+    st.stop()
+
 k = load_kpis(start, end, include_bots)
 
 c1, c2, c3, c4, c5 = st.columns(5)
@@ -124,37 +141,41 @@ if k["merged_prs"] == 0:
 st.divider()
 
 st.subheader("Trends")
-grain_label = st.radio("Group by", ["Monthly", "Weekly"], horizontal=True, key="grain")
-grain = "month" if grain_label == "Monthly" else "week"
-unit = grain  # "month" or "week", for captions
-trend = load_trend(start, end, include_bots, grain)
+if k["merged_prs"] == 0:
+    # No merges means every trend line would be empty, so show the reason instead of empty charts.
+    st.info("No PRs were merged in this date range with these filters, so there are no trends to show.")
+else:
+    grain_label = st.radio("Group by", ["Monthly", "Weekly"], horizontal=True, key="grain")
+    grain = "month" if grain_label == "Monthly" else "week"
+    unit = grain  # "month" or "week", for captions
+    trend = load_trend(start, end, include_bots, grain)
 
-st.markdown("**Deployment frequency: PRs merged per " + unit + "**")
-st.bar_chart(trend, x="period_start", y="merged_prs", x_label=f"{unit} starting", y_label="merged PRs")
-st.caption(
-    f"How many PRs were merged each {unit} (a merge is used as a proxy for a deployment). "
-    f"A {unit} with no merges shows as zero. Good looks like steady output without long silent gaps; "
-    f"a run of empty {unit}s usually means shipping stopped. The first and last {unit} can be partial "
-    "if the date range starts or ends part-way through."
-)
+    st.markdown("**Deployment frequency: PRs merged per " + unit + "**")
+    st.bar_chart(trend, x="period_start", y="merged_prs", x_label=f"{unit} starting", y_label="merged PRs")
+    st.caption(
+        f"How many PRs were merged each {unit} (a merge is used as a proxy for a deployment). "
+        f"A {unit} with no merges shows as zero. Good looks like steady output without long silent gaps; "
+        f"a run of empty {unit}s usually means shipping stopped. The first and last {unit} can be partial "
+        "if the date range starts or ends part-way through."
+    )
 
-left, right = st.columns(2)
-with left:
-    st.markdown("**Lead time: median hours per " + unit + "**")
-    st.line_chart(trend, x="period_start", y="median_lead_time_hours", x_label=f"{unit} starting", y_label="hours")
-    st.caption(
-        f"The typical PR's time from opened to merged, for PRs merged in each {unit}. Good looks like low and "
-        f"stable, or trending down. A {unit} with no merges has no point. With only a few merges in a {unit} the "
-        "median jumps around, so read it together with the PR count chart above."
-    )
-with right:
-    st.markdown("**Lead time: 90th percentile hours per " + unit + "**")
-    st.line_chart(trend, x="period_start", y="p90_lead_time_hours", x_label=f"{unit} starting", y_label="hours")
-    st.caption(
-        f"How long the slowest tenth of PRs took in each {unit}: 9 in 10 were merged faster than this. Good looks "
-        "like staying close to the median. Tall spikes mean a few PRs sat waiting for a long time, which the "
-        "median hides."
-    )
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**Lead time: median hours per " + unit + "**")
+        st.line_chart(trend, x="period_start", y="median_lead_time_hours", x_label=f"{unit} starting", y_label="hours")
+        st.caption(
+            f"The typical PR's time from opened to merged, for PRs merged in each {unit}. Good looks like low and "
+            f"stable, or trending down. A {unit} with no merges has no point. With only a few merges in a {unit} the "
+            "median jumps around, so read it together with the PR count chart above."
+        )
+    with right:
+        st.markdown("**Lead time: 90th percentile hours per " + unit + "**")
+        st.line_chart(trend, x="period_start", y="p90_lead_time_hours", x_label=f"{unit} starting", y_label="hours")
+        st.caption(
+            f"How long the slowest tenth of PRs took in each {unit}: 9 in 10 were merged faster than this. Good looks "
+            "like staying close to the median. Tall spikes mean a few PRs sat waiting for a long time, which the "
+            "median hides."
+        )
 
 st.divider()
 

@@ -92,6 +92,28 @@ def trend(start: datetime.date, end: datetime.date, include_bots: bool, grain: s
     )
 
 
+def has_activity(start: datetime.date, end: datetime.date, include_bots: bool) -> bool:
+    """Did anything happen in [start, end]? A PR opened or merged (bot PRs only if include_bots),
+    or a review submitted. When this is False there is nothing to chart, and the page says so
+    instead of drawing empty charts with a "0.000000" axis."""
+    (found,), = run(
+        """
+        select
+            exists (
+                select 1 from main.fct_pull_requests
+                where (cast(opened_at as date) between ? and ? or cast(merged_at as date) between ? and ?)
+                  and (? or not is_bot)
+            )
+            or exists (
+                select 1 from main.stg_github__pr_reviews
+                where cast(submitted_at as date) between ? and ?
+            )
+        """,
+        [start, end, start, end, include_bots, start, end],
+    )
+    return bool(found)
+
+
 def lead_time_breakdown(start: datetime.date, end: datetime.date) -> dict:
     """Where a human PR's time to merge goes: waiting for the first review, or in review.
 

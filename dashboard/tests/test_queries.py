@@ -480,3 +480,25 @@ def test_quiet_window_gives_empty_lists_not_errors():
     r = queries.top_reviewers(*QUIET)
     assert r["reviewers"].empty and r["own_pr_comments_left_out"] == 0
     assert queries.top_authors(*QUIET).empty
+
+
+# ---------- has_activity ----------
+
+def test_has_activity_matches_the_known_windows():
+    assert queries.has_activity(*FULL, False) and queries.has_activity(*FULL, True)
+    assert not queries.has_activity(datetime.date(2026, 3, 30), datetime.date(2026, 8, 28), True)  # nothing at all
+    assert queries.has_activity(datetime.date(2026, 3, 30), datetime.date(2026, 9, 30), False)  # reviews only
+    # one bot PR opened on 2025-12-01..03: invisible with bots off, visible with bots on
+    assert not queries.has_activity(datetime.date(2025, 12, 1), datetime.date(2025, 12, 3), False)
+    assert queries.has_activity(datetime.date(2025, 12, 1), datetime.date(2025, 12, 3), True)
+
+
+def test_has_activity_agrees_with_the_other_queries_for_every_month():
+    # whenever it says there is activity, at least one of the PR or review queries must find something
+    for month in queries.trend(*FULL, True, "month")["period_start"]:
+        start = month.date()
+        end = (start.replace(day=28) + datetime.timedelta(days=4)).replace(day=1) - datetime.timedelta(days=1)
+        found = queries.has_activity(start, end, True)
+        evidence = (queries.kpis(start, end, True)["merged_prs"] > 0 or queries.review_funnel(start, end, True)["opened"] > 0
+                    or queries.run("select count(*) from main.stg_github__pr_reviews where cast(submitted_at as date) between ? and ?", [start, end])[0][0] > 0)
+        assert found == evidence, f"{start}: has_activity={found}, evidence={evidence}"

@@ -12,7 +12,8 @@ pytestmark = pytest.mark.skipif(not queries.DB_PATH.exists(), reason="dev.duckdb
 
 APP = str(queries.DB_PATH.parent / "dashboard" / "app.py")
 Y2024 = (datetime.date(2024, 1, 1), datetime.date(2024, 12, 31))
-NO_MERGES = (datetime.date(2025, 12, 1), datetime.date(2025, 12, 3))
+NO_MERGES = (datetime.date(2025, 12, 1), datetime.date(2025, 12, 3))  # humans: nothing at all; with bots: 1 bot PR opened
+REVIEWS_ONLY = (datetime.date(2026, 3, 30), datetime.date(2026, 9, 30))  # 12 reviews, but no PR opened or merged
 
 
 def run_app(date_range=None, include_bots=None):
@@ -61,12 +62,14 @@ def test_2024_tiles_humans_only_equal_mf_query_and_agent():
     assert t["p90 lead time"] == "697.9 h"  # 697.91
 
 
-def test_empty_range_shows_dashes_and_a_warning_instead_of_crashing():
-    at = run_app(date_range=NO_MERGES)
+def test_range_with_activity_but_no_merges_shows_dashes_a_warning_and_no_trend_charts():
+    at = run_app(date_range=REVIEWS_ONLY)  # 12 reviews were submitted, nothing was opened or merged
     t = tiles(at)
     assert t["Merged PRs"] == "0" and t["Median lead time"] == "–" and t["Review coverage"] == "–"
     assert any("No PRs were merged" in w.value for w in at.warning)
-
+    assert any("no trends to show" in i.value for i in at.info)
+    assert not any("merged_prs" in c.proto.spec for c in charts(at))  # no empty trend chart with a 0.000000 axis
+    assert len(at.radio) == 0  # the weekly/monthly selector has nothing to switch, so it isn't shown
 
 def test_picking_only_a_start_date_waits_for_the_end_date():
     at = AppTest.from_file(APP, default_timeout=60).run()
@@ -153,12 +156,9 @@ def test_breakdown_follows_the_date_range():
 
 
 def test_breakdown_with_nothing_to_split_shows_a_message_not_an_error():
-    at = run_app(date_range=NO_MERGES)
+    at = run_app(date_range=REVIEWS_ONLY)
     assert any("nothing to split" in i.value for i in at.info)
     assert not any("Stage" in table.value.columns for table in at.dataframe)  # no breakdown table
-
-
-# ---------- review funnel ----------
 
 def funnel_table(at):
     return next(t.value for t in at.dataframe if "% of opened" in t.value.columns)
@@ -273,7 +273,46 @@ def test_reviewer_chart_keeps_the_ranking_order():
     assert chart_data(chart)["reviewer"].tolist()[:2] == ["lovelydinosaur", "Kludex"]
 
 
-def test_people_section_with_no_activity_shows_messages_not_errors():
-    at = run_app(date_range=QUIET)
+def test_people_section_with_no_people_shows_messages_not_errors():
+    # one bot PR was opened and nobody reviewed anything: the page renders, the people section has nothing to rank
+    at = run_app(date_range=NO_MERGES, include_bots=True)
     text = " ".join(i.value for i in at.info)
     assert "Nobody reviewed anyone else's PR" in text and "No PRs were opened by people" in text
+
+
+# ---------- empty states: only the message, never an empty chart ----------
+
+QUIET = (datetime.date(2026, 3, 30), datetime.date(2026, 8, 28))  # nothing at all, with or without bots
+
+
+def numeric_values(chart):
+    df = chart_data(chart)
+    return [v for column in df.columns if str(df[column].dtype).startswith(("int", "float")) for v in df[column].dropna()]
+
+
+@pytest.mark.parametrize("include_bots", [False, True])
+def test_a_range_with_no_activity_shows_only_the_message(include_bots):
+    at = run_app(date_range=QUIET, include_bots=include_bots)
+    assert [i.value for i in at.info] == ["No pull request activity in this date range. Try a wider date range."]
+    assert len(at.metric) == 0 and len(charts(at)) == 0 and len(at.dataframe) == 0 and len(at.subheader) == 0
+    assert len(at.radio) == 0
+
+
+def test_a_range_with_only_bot_activity_tells_you_to_include_bots_and_then_renders():
+    humans_only = run_app(date_range=NO_MERGES, include_bots=False)
+    assert len(humans_only.info) == 1 and "Include bot PRs" in humans_only.info[0].value
+    assert len(humans_only.metric) == 0 and len(charts(humans_only)) == 0  # only the message
+    with_bots = run_app(date_range=NO_MERGES, include_bots=True)
+    assert len(with_bots.metric) > 0 and any("No PRs were merged" in w.value for w in with_bots.warning)
+    assert not any("merged_prs" in c.proto.spec for c in charts(with_bots))  # still no empty trend chart
+
+
+@pytest.mark.parametrize(
+    "date_range, include_bots",
+    [(None, False), (None, True), (Y2024, False), (Y2024, True), (REVIEWS_ONLY, False), (NO_MERGES, True)],
+    ids=["full-humans", "full-all", "2024-humans", "2024-all", "reviews-only", "one-bot-pr"],
+)
+def test_no_chart_is_ever_drawn_with_nothing_in_it(date_range, include_bots):
+    at = run_app(date_range=date_range, include_bots=include_bots)
+    for chart in charts(at):
+        assert any(v > 0 for v in numeric_values(chart)), f"an empty chart was drawn: {chart.proto.spec[:120]}"
