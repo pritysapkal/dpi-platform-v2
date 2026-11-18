@@ -377,6 +377,51 @@ def test_request_timeout_is_retried_as_transient():
     assert "timeout" in events[0]["reason"]
 
 
+@pytest.mark.parametrize(
+    "network_error",
+    [
+        httpx.RemoteProtocolError("Server disconnected without sending a response."),
+        httpx.ConnectError("connection refused"),
+        httpx.ReadError("connection reset"),
+    ],
+    ids=["server-disconnected", "connect-error", "read-error"],
+)
+def test_dropped_connections_are_retried_like_timeouts_and_named_in_the_reason(network_error):
+    # What crashed an eval run: after a 503 retry, the server hung up without answering.
+    client, sdk, sleeps, events = make_client({"primary": [network_error, ok_response()]})
+    turn = client.generate([])
+    assert turn.model == "primary" and sdk.calls == ["primary"] * 2 and len(sleeps) == 1
+    assert events[0]["reason"] == f"network error ({type(network_error).__name__})"
+
+
+def test_a_503_followed_by_a_dropped_connection_still_recovers():
+    # the exact sequence from the failed eval run (q05)
+    client, sdk, _, events = make_client(
+        {"primary": [api_error(503), httpx.RemoteProtocolError("Server disconnected"), ok_response()]}
+    )
+    assert client.generate([]).model == "primary" and sdk.calls == ["primary"] * 3
+    assert [e["reason"] for e in events] == ["503 UNAVAILABLE", "network error (RemoteProtocolError)"]
+
+
+def test_persistent_dropped_connections_exhaust_retries_and_then_use_the_fallback():
+    client, sdk, _, events = make_client(
+        {"primary": [], "primary:default": httpx.RemoteProtocolError("hung up"), "backup": [ok_response()]},
+        fallback="backup",
+    )
+    assert client.generate([]).model == "backup"
+    assert sdk.calls == ["primary"] * llm.MAX_ATTEMPTS + ["backup"]
+    assert any(e["event"] == "fallback" for e in events)
+
+
+def test_timeouts_keep_their_own_reason_and_unrelated_bugs_are_not_swallowed():
+    client, _, _, events = make_client({"primary": [httpx.ReadTimeout("slow"), ok_response()]})
+    client.generate([])
+    assert events[0]["reason"].startswith("timeout after")
+    broken, _, _, _ = make_client({"primary": [ValueError("a bug in our own code")]})
+    with pytest.raises(ValueError, match="a bug"):  # only network trouble is retried; real bugs surface
+        broken.generate([])
+
+
 def make_fallback_client(sticky: bool):
     sdk = ScriptedSDK({"primary": [], "primary:default": api_error(503), "backup": [], "backup:default": ok_response()})
     client = llm.GeminiClient(

@@ -153,15 +153,20 @@ class GeminiClient:
                 response = self._client.models.generate_content(
                     model=model, contents=contents, config=self._config
                 )
-            except (errors.APIError, httpx.TimeoutException) as exc:
+            # httpx.TransportError covers timeouts AND dropped connections ("server disconnected
+            # without sending a response"), refused connections and read errors: all temporary
+            # network trouble. During an eval one dropped connection used to crash the whole run.
+            except (errors.APIError, httpx.TransportError) as exc:
                 api_error = exc if isinstance(exc, errors.APIError) else None
                 if api_error and api_error.code not in TRANSIENT_STATUS_CODES:
                     # 400/401/403/404: retrying cannot help, so fail fast with a clear message.
                     raise LLMError(_explain_fatal(api_error, model)) from exc
                 if api_error:
                     reason = f"{api_error.code} {api_error.status}"
-                else:
+                elif isinstance(exc, httpx.TimeoutException):
                     reason = f"timeout after {REQUEST_TIMEOUT_SECONDS}s"
+                else:
+                    reason = f"network error ({type(exc).__name__})"
                 if attempt == MAX_ATTEMPTS:
                     raise RetriesExhaustedError(
                         f"{model}: still failing after {MAX_ATTEMPTS} attempts ({reason})."
