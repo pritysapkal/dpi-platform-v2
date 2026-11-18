@@ -34,6 +34,11 @@ RESULTS_PATH = EVALS_DIR / "results.md"
 
 # Columns shown in results.md, even before a model has been run ("pending").
 REPORT_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
+# Models in REPORT_MODELS that could not be evaluated, and why. Shown instead of "pending"
+# while the model has no saved run; once a real run exists it is reported like any other.
+NOT_EVALUATED = {
+    "gemini-3.8-flash": "not evaluated — model unavailable (503/504) on 2026-11-18",
+}
 DONE_STATUSES = {"answered", "step_limit"}  # anything else (an API error) is re-run
 
 _WRITE_RE = re.compile(r"\b(" + "|".join(BLOCKED_KEYWORDS) + r")\b", re.IGNORECASE)
@@ -325,7 +330,7 @@ def write_report(items: list[dict]) -> str:
     for m in models:
         records = runs[m]
         if not records:
-            lines.append(f"| `{m}` | pending | – | – | – | – | – | – | – |")
+            lines.append(f"| `{m}` | {NOT_EVALUATED.get(m, 'pending')} | – | – | – | – | – | – | – |")
             continue
         answered = [r for r in records.values() if r["status"] in DONE_STATUSES]
         errors = len(records) - len(answered)
@@ -357,7 +362,7 @@ def write_report(items: list[dict]) -> str:
         for m in models:
             s = scored[m].get(item["id"])
             if s is None:
-                cells.append("pending")
+                cells.append("not evaluated" if m in NOT_EVALUATED and not runs[m] else "pending")
             else:
                 result = "**PASS**" if s["passed"] else "**FAIL**"
                 cells.append(f"{mark(s['tool'])} · {mark(s['numbers'])} · {mark(s['trap'])} → {result}")

@@ -474,19 +474,24 @@ new run with `--fresh` moves the previous one into `runs/history/` instead of
 deleting it, so earlier scores stay visible. Full report:
 [`agent/evals/results.md`](./agent/evals/results.md).
 
-| Run (all `gemini-3.5-flash-lite`, 2026-10-06) | Questions | Overall | Correct tools | Numbers correct | Traps handled | t03 "last quarter" |
-|---|---|---|---|---|---|---|
-| Before: the model computes dates itself | 17 | **16/17** | 17/17 | 11/11 | 5/6 | FAIL |
-| Targeted check after the fix (t03 + 3 new) | 4 | **4/4** | 4/4 | 3/3 | 1/1 | PASS |
-| After: dates resolved in code, full set | 20 | **20/20** | 20/20 | 14/14 | 6/6 | PASS |
+| Run (all `gemini-3.5-flash-lite`) | Questions | Overall | Correct tools | Numbers correct | Traps handled | API errors | t03 "last quarter" |
+|---|---|---|---|---|---|---|---|
+| 2026-10-06, before: the model computes dates itself | 17 | **16/17** | 17/17 | 11/11 | 5/6 | 0 | FAIL |
+| 2026-10-06, targeted check after the fix (t03 + 3 new) | 4 | **4/4** | 4/4 | 3/3 | 1/1 | 0 | PASS |
+| 2026-10-06, after: dates resolved in code, full set | 20 | **20/20** | 20/20 | 14/14 | 6/6 | 0 | PASS |
+| **2026-11-18, after Phase 1** (523 PRs, metrics from `fct_pull_requests`, p90 and bot option, new prompt), full set | 20 | **20/20** | 20/20 | 14/14 | 6/6 | 0 | PASS |
 
-`gemini-3.8-flash` is still pending: the free tier returned 503 "high demand" all day.
+The 2026-11-18 run is the current one. `gemini-3.8-flash` was **not evaluated**: the model was
+unavailable (503/504 errors on every question) on 2026-11-18, so the default is
+`gemini-3.5-flash-lite`. The 3.5-flash-lite run was assembled in two parts: `q01` to `q04`
+passed in a first attempt that a dropped connection then crashed (which led to retrying network
+errors), and `q05` onwards ran after that fix, with no API errors.
 
-**These results are out of date.** They were produced before the data window, the
-tools and the prompt changed (500 PRs, a day-weighted figure, no p90 or bot option).
-The ground truth in `eval_set.json` now reads `fct_pull_requests` and was checked to give
-the same values, but the agent has **not been re-evaluated** since, so `results.md`
-still shows the old run.
+Reading the November answers, not just the scores: every metric answer says whether bot PRs
+are included, the lead-time answers quote the p90 next to the median, and "how many PRs are
+currently open?" is dated to the pull ("as of the data last pulled", 2026-11-01). The questions
+don't yet ask for the humans-only filter or the p90 specifically, so those abilities are only
+exercised incidentally.
 
 ### Known limitations / failure cases
 
@@ -521,18 +526,18 @@ These come from what actually happened during development and the eval runs.
   true.** In q06 the answer was scored correct (October 2024, 23 merges) but also
   described October as "2024-10-01 to 2024-10-30", one day short. Extra wrong
   details aren't caught.
-- **"Currently" means "as of the last data pull".** For "How many PRs are
-  currently open?" the agent correctly answered 76, but didn't say that's as of
-  the snapshot, not today. The prompt now asks it to say so, and `get_data_coverage`
-  returns `data_as_of`; not yet re-evaluated.
-- **Tool calls aren't always efficient.** Two answers (q07, q09) used 5 of the
-  6 allowed calls, partly on `list_tables`/`get_schema` exploration the system
-  prompt could make unnecessary. After the period fix the model also sometimes
-  calls `resolve_period` for periods that are already explicit (q05, q08, q10),
-  which is harmless but costs a call.
+- **"Currently" means "as of the last data pull".** In the October run the agent
+  answered 76 open PRs without saying that's as of the snapshot, not today. The prompt
+  now asks it to say so, and in the 2026-11-18 run it did ("as of the data last pulled
+  ... 2026-11-01").
+- **Tool calls aren't always efficient.** In the 2026-11-18 run two answers (q09, q10)
+  used 5 of the 6 allowed calls, partly on `list_tables`/`get_schema` exploration the
+  system prompt could make unnecessary, and one (q10) called `resolve_period` for a period
+  that was already explicit. That is harmless but costs calls. In October the same
+  pattern showed up on q07 and q09, and on q05, q08 and q10.
 - **The loop's date check is a safety net that the eval never triggered.** In
-  the 20/20 run the model always passed phrases, so the check never had to
-  reject anything. Only the unit tests (including a replay of the original t03
+  both 20/20 runs (October and November) the model always passed phrases, so the check
+  never had to reject anything. Only the unit tests (including a replay of the original t03
   mistake) show that it works.
 - **Dates inside free-form SQL aren't checked.** If the model answers a
   relative-date question through `run_readonly_sql` with hand-written dates in a
