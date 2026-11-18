@@ -438,7 +438,7 @@ pip install -r agent/requirements.txt
 cp agent/.env.example agent/.env          # then paste a key from https://aistudio.google.com/apikey
 python -m agent.cli "Which month had the most merged pull requests?"
 python -m agent.cli --model gemini-3.5-flash-lite --sticky-fallback "..."
-python -m pytest agent/tests -v           # 230 tests, no API key needed
+python -m pytest agent/tests -v           # 255 tests, no API key needed
 python -m agent.evals.run_evals --model gemini-3.5-flash-lite
 ```
 
@@ -455,9 +455,10 @@ skip themselves if the database hasn't been built.
 
 ### Evaluation
 
-[`agent/evals/eval_set.json`](./agent/evals/eval_set.json) has 20 questions:
+[`agent/evals/eval_set.json`](./agent/evals/eval_set.json) has 23 questions:
 
-- **14 metric questions**: counts, medians, period comparisons, per-author and per-month breakdowns, review coverage, and relative or explicit periods ("last year", "so far this year", "Q4 2024 vs Q4 2023"). Relative-period ground truth uses `current_date` in SQL, so it stays correct whatever day the eval runs.
+- **17 metric questions**: counts, medians, period comparisons, per-author and per-month breakdowns, review coverage, and relative or explicit periods ("last year", "so far this year", "Q4 2024 vs Q4 2023"). Relative-period ground truth uses `current_date` in SQL, so it stays correct whatever day the eval runs.
+- **3 questions on the newer abilities** (q15 to q17): the median for human-written PRs only, the 90th percentile, and both together. A model that ignored the humans-only option would answer 23.91 h where the right answer is 23.18 h, and the scorer fails it (this is unit-tested).
 - **6 traps**: change failure rate (not tracked), "which repo is worst" (there is only one), "last quarter" (no data; must cite the last date, 2026-02-23), a request to delete data, a prompt injection planted in a mocked PR title, and an ambiguous "How are we doing?".
 
 Expected values are **SQL queries run against the database at eval time**, so
@@ -479,19 +480,24 @@ deleting it, so earlier scores stay visible. Full report:
 | 2026-10-06, before: the model computes dates itself | 17 | **16/17** | 17/17 | 11/11 | 5/6 | 0 | FAIL |
 | 2026-10-06, targeted check after the fix (t03 + 3 new) | 4 | **4/4** | 4/4 | 3/3 | 1/1 | 0 | PASS |
 | 2026-10-06, after: dates resolved in code, full set | 20 | **20/20** | 20/20 | 14/14 | 6/6 | 0 | PASS |
-| **2026-11-18, after Phase 1** (523 PRs, metrics from `fct_pull_requests`, p90 and bot option, new prompt), full set | 20 | **20/20** | 20/20 | 14/14 | 6/6 | 0 | PASS |
+| **2026-11-18, after Phase 1** (523 PRs, metrics from `fct_pull_requests`, p90 and bot option, new prompt), the original 20 questions | 20 | **20/20** | 20/20 | 14/14 | 6/6 | 0 | PASS |
+| 2026-11-18, the 3 new questions on the humans-only option and the p90 (q15 to q17) | 3 | **3/3** | 3/3 | 3/3 | – | 0 | – |
 
-The 2026-11-18 run is the current one. `gemini-3.8-flash` was **not evaluated**: the model was
+All 23 questions together: **23/23**, 23/23 correct tools, 17/17 numbers, 6/6 traps, 0 API errors
+(`results.md` has the per-question table). `gemini-3.8-flash` was **not evaluated**: the model was
 unavailable (503/504 errors on every question) on 2026-11-18, so the default is
-`gemini-3.5-flash-lite`. The 3.5-flash-lite run was assembled in two parts: `q01` to `q04`
-passed in a first attempt that a dropped connection then crashed (which led to retrying network
-errors), and `q05` onwards ran after that fix, with no API errors.
+`gemini-3.5-flash-lite`.
 
-Reading the November answers, not just the scores: every metric answer says whether bot PRs
-are included, the lead-time answers quote the p90 next to the median, and "how many PRs are
-currently open?" is dated to the pull ("as of the data last pulled", 2026-11-01). The questions
-don't yet ask for the humans-only filter or the p90 specifically, so those abilities are only
-exercised incidentally.
+How the November run was assembled, for transparency: `q01` to `q04` passed in a first attempt that
+a dropped connection then crashed (which led to retrying network errors); `q05` onwards ran after
+that fix with no API errors; and `q15` to `q17` were added and run afterwards on their own
+(`--only q15,q16,q17`), with the agent unchanged. During `q16` the model returned two 503 errors
+and the retry logic recovered.
+
+Reading the November answers, not just the scores: every metric answer says whether bot PRs are
+included, the lead-time answers quote the p90 next to the median, "how many PRs are currently
+open?" is dated to the pull ("as of the data last pulled", 2026-11-01), and in `q15` and `q17` the
+model chose `include_bots=false` on its own from the wording ("written by people", "human-written").
 
 ### Known limitations / failure cases
 
@@ -562,7 +568,7 @@ These come from what actually happened during development and the eval runs.
   2026-11-18 it returned 503 and 504 errors on every question, which also showed that a
   504 had been wrongly treated as permanent (now retried). That is why the default
   model is `gemini-3.5-flash-lite`, and why the 3.8-flash eval column is not evaluated.
-- **Small, single-run eval.** 20 questions, one run per model, at temperature 0
+- **Small, single-run eval.** 23 questions, one run per model, at temperature 0
   (which reduces but doesn't remove run-to-run variation). It catches
   regressions and compares models; it isn't a statistical benchmark.
 - **The guardrails lean strict.** The keyword layer rejects identifiers like

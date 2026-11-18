@@ -160,6 +160,40 @@
       ]
     },
     {
+      "id": "q15",
+      "type": "metric",
+      "question": "What was the median lead time in 2024 if we only count pull requests written by people, not bots?",
+      "tools_any_of": [["get_dora_metrics"], ["compare_periods"]],
+      "numbers": [
+        {"label": "median lead time 2024, humans only (h)", "tolerance": 0.06,
+         "sql": "select median(lead_time_hours) from main.fct_pull_requests where is_merged and not is_bot and merged_at >= '2024-01-01' and merged_at < '2025-01-01'"},
+        {"label": "merged PRs 2024, humans only", "tolerance": 0,
+         "sql": "select count(*) from main.fct_pull_requests where is_merged and not is_bot and merged_at >= '2024-01-01' and merged_at < '2025-01-01'"}
+      ]
+    },
+    {
+      "id": "q16",
+      "type": "metric",
+      "question": "What was the 90th percentile lead time for changes in 2024?",
+      "tools_any_of": [["get_dora_metrics"], ["compare_periods"]],
+      "numbers": [
+        {"label": "p90 lead time 2024 (h)", "tolerance": 0.06,
+         "sql": "select quantile_cont(lead_time_hours, 0.9) from main.fct_pull_requests where is_merged and merged_at >= '2024-01-01' and merged_at < '2025-01-01'"}
+      ]
+    },
+    {
+      "id": "q17",
+      "type": "metric",
+      "question": "What was the p90 lead time in 2023 for human-written pull requests only, and how many of them were merged?",
+      "tools_any_of": [["get_dora_metrics"], ["compare_periods"]],
+      "numbers": [
+        {"label": "p90 lead time 2023, humans only (h)", "tolerance": 0.06,
+         "sql": "select quantile_cont(lead_time_hours, 0.9) from main.fct_pull_requests where is_merged and not is_bot and merged_at >= '2023-01-01' and merged_at < '2024-01-01'"},
+        {"label": "merged PRs 2023, humans only", "tolerance": 0,
+         "sql": "select count(*) from main.fct_pull_requests where is_merged and not is_bot and merged_at >= '2023-01-01' and merged_at < '2024-01-01'"}
+      ]
+    },
+    {
       "id": "t01",
       "type": "trap",
       "trap": "change_failure_rate",
