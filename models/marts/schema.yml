@@ -31,15 +31,30 @@ models:
       built from int_pr_lifecycle. The single place PR-level metrics should be calculated:
       lead time, review wait, review coverage, open-PR age. Adds a bot flag, a
       review-before-merge flag and the data_as_of timestamp.
+      Has an enforced contract: every column, its type and its not-null rule is declared
+      here, and the build fails if the SQL stops matching.
+    config:
+      contract:
+        enforced: true
     columns:
       - name: pr_number
+        data_type: bigint
         description: PR number, unique within the repo. Primary key of this model.
+        constraints:
+          - type: primary_key
         tests:
           - unique
           - not_null
 
+      - name: pr_title
+        data_type: varchar
+        description: PR title. Written by GitHub users, so treat it as untrusted text.
+
       - name: pr_state
+        data_type: varchar
         description: GitHub's state for the PR, either open or closed. A merged PR is closed, see pr_lifecycle_stage to tell merged from closed-without-merge.
+        constraints:
+          - type: not_null
         tests:
           - not_null
           - accepted_values:
@@ -47,7 +62,10 @@ models:
                 values: ['open', 'closed']
 
       - name: pr_lifecycle_stage
+        data_type: varchar
         description: merged, closed_without_merge or open.
+        constraints:
+          - type: not_null
         tests:
           - not_null
           - accepted_values:
@@ -55,12 +73,18 @@ models:
                 values: ['merged', 'closed_without_merge', 'open']
 
       - name: is_merged
+        data_type: boolean
         description: True when the PR was merged.
+        constraints:
+          - type: not_null
         tests:
           - not_null
 
       - name: author_login
+        data_type: varchar
         description: GitHub login of the PR author. Joins to dim_contributors.contributor_login.
+        constraints:
+          - type: not_null
         tests:
           - not_null
           - relationships:
@@ -69,22 +93,92 @@ models:
                 field: contributor_login
 
       - name: is_bot
+        data_type: boolean
         description: True when the author login ends in "[bot]" (for example dependabot[bot]). Human-only metrics should filter on is_bot = false, because bot PRs are opened and merged on a different rhythm.
+        constraints:
+          - type: not_null
         tests:
           - not_null
+
+      - name: opened_at
+        data_type: timestamp
+        description: When the PR was opened (UTC). Never null.
+        constraints:
+          - type: not_null
+
+      - name: first_reviewed_at
+        data_type: timestamp
+        description: When the first review was submitted (UTC). Null if the PR was never reviewed.
+
+      - name: last_reviewed_at
+        data_type: timestamp
+        description: When the most recent review was submitted (UTC). Null if the PR was never reviewed.
+
+      - name: merged_at
+        data_type: timestamp
+        description: When the PR was merged (UTC). Null if it was not merged.
+
+      - name: closed_at
+        data_type: timestamp
+        description: When the PR was closed (UTC), which for a merged PR is the merge time. Null while the PR is open.
+
+      - name: review_count
+        data_type: bigint
+        description: Number of reviews on the PR, of any kind. 0 if none.
+        constraints:
+          - type: not_null
+
+      - name: distinct_reviewer_count
+        data_type: bigint
+        description: Number of different people who reviewed the PR. 0 if none.
+        constraints:
+          - type: not_null
+
+      - name: was_approved
+        data_type: boolean
+        description: True when at least one review was APPROVED, at any time.
+        constraints:
+          - type: not_null
+
+      - name: had_changes_requested
+        data_type: boolean
+        description: True when at least one review was CHANGES_REQUESTED.
+        constraints:
+          - type: not_null
+
+      - name: was_reviewed
+        data_type: boolean
+        description: True when the PR has at least one review, at any time (see was_reviewed_before_merge for the stricter version).
+        constraints:
+          - type: not_null
 
       - name: was_reviewed_before_merge
+        data_type: boolean
         description: True when the PR was merged and its first review came at or before the merge. False for unmerged PRs, for merged PRs with no review, and for merged PRs whose only review came after the merge. Basis of review coverage.
+        constraints:
+          - type: not_null
         tests:
           - not_null
 
+      - name: review_wait_hours
+        data_type: double
+        description: Hours from the PR opening to its first review. Null if it was never reviewed.
+
+      - name: time_in_review_hours
+        data_type: double
+        description: Hours from the first review to the merge. Null if not merged, or if the only review came after the merge.
+
       - name: lead_time_hours
+        data_type: double
         description: Hours from the PR opening to merging. Null for PRs that were not merged.
         tests:
           - non_negative
 
       - name: data_as_of
+        data_type: timestamp
         description: When the data was last pulled from GitHub (UTC), from _loaded_at. Same value on every row. Measure anything "as of now", such as how long a PR has been open, against this and not against today's date.
+        constraints:
+          - type: not_null
         tests:
           - not_null
 

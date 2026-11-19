@@ -134,6 +134,11 @@ flowchart LR
 
 ### `fct_pull_requests` — one row per pull request (523 rows)
 
+This table has an **enforced dbt contract**: every column, its type and whether it may be null is declared in
+`models/marts/schema.yml`. If the model's SQL stops matching (a column added, dropped or retyped), or a row breaks
+the declared rules, the build fails instead of quietly producing a different table. `pr_number` is a real primary
+key in the database, and 14 columns are `NOT NULL`.
+
 | Column | Type | Description |
 |---|---|---|
 | `pr_number` | bigint | PR number. Primary key. |
@@ -211,7 +216,7 @@ tests were each run against deliberately corrupted copies of the database while 
 them, and failed as intended.
 
 **Not covered yet:** source freshness checks (the raw tables now carry `_loaded_at`, so
-they can be added), dbt unit tests, and model contracts.
+they can be added) and dbt unit tests. Only `fct_pull_requests` has a model contract so far.
 
 ## Semantic layer
 

@@ -145,13 +145,15 @@ From hands-on testing of the dashboard.
 
 **State now (2026-11-19):** **490 tests** (agent 255, ingestion 32, dashboard 203). The agent and ingestion suites (287) were re-run on 2026-11-19 and passed; the dashboard suite (203) passed the same day before the last commit. The eval set has 23 questions, last run 23/23. `dbt build` ran green in CI on `8dfdb16` (8 models, 61 tests).
 
+**Phase 2 started (2026-11-19):**
+- [x] **Model contract on `fct_pull_requests`**: contract enforced with all 22 columns typed (matching what DuckDB builds), a real primary key on `pr_number` and `NOT NULL` on 14 columns, and descriptions added for the 13 columns that had none. Verified: `dbt build` PASS=69 unchanged, `mf validate-configs` clean, the 2024 `mf query` numbers unchanged, and all 490 tests pass. Tested on a scratch copy that the contract refuses five kinds of bad input: a wrong declared type, a column missing from the YAML, a column missing from the SQL, nulls in a NOT NULL column, and duplicate keys.
+
 **Housekeeping (2026-11-19):** deleted three tracked scratch files from the first days of the project (`check.sql`, `verify_data.py`, `verify_staging.py`: one-off checks that nothing referred to; the two Python files opened `dev.duckdb` in write mode). They remain in git history.
 
 ## Next Immediate Step
 The batch in progress, in order:
-1. Model contract on `fct_pull_requests`.
-2. dbt unit tests: the post-merge-review case plus two edge cases.
-3. Add `pytest` (the subset that needs no database) and `mf validate-configs` to CI.
+1. dbt unit tests: the post-merge-review case plus two edge cases.
+2. Add `pytest` (the subset that needs no database) and `mf validate-configs` to CI.
 
 Then Phase 2, per the decisions above (planned, not started): the CI split with fixture data and a scheduled daily workflow; source freshness; the public Streamlit deploy from a Parquet snapshot; optionally growing the eval set toward about 35 questions.
 
