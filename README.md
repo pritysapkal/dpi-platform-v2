@@ -189,8 +189,8 @@ key in the database, and 14 columns are `NOT NULL`.
 
 ## dbt tests
 
-`dbt build` runs 8 models and **61 tests**, in dependency order. Every model's primary
-key gets `unique` and `not_null`; on top of that:
+`dbt build` runs 8 models, **61 data tests** and **4 unit tests** (73 in all), in dependency
+order. Every model's primary key gets `unique` and `not_null`; on top of that:
 
 | Model | Beyond the primary key |
 |---|---|
@@ -215,8 +215,23 @@ The `relationships`, `accepted_values` (on `review_state`), mart-versus-fact and
 tests were each run against deliberately corrupted copies of the database while building
 them, and failed as intended.
 
-**Not covered yet:** source freshness checks (the raw tables now carry `_loaded_at`, so
-they can be added) and dbt unit tests. Only `fct_pull_requests` has a model contract so far.
+**Unit tests.** Data tests check the real data; unit tests check the *logic*, by running a model's SQL on a few
+made-up rows (`models/intermediate/unit_tests.yml`, `models/marts/unit_tests.yml`), so they give the same answer
+whatever GitHub's data looks like:
+
+| Unit test | What it pins down |
+|---|---|
+| `int_pr_lifecycle_review_after_merge_has_no_time_in_review` | A review that arrives after the PR was merged is not review time: `time_in_review_hours` is null, not negative. A control PR reviewed before merging does get a value. |
+| `fct_pull_requests_review_after_merge_is_not_review_coverage` | The same PR is `was_reviewed` but not `was_reviewed_before_merge`, so it doesn't count toward review coverage. |
+| `fct_pull_requests_review_coverage_boundary` | The "at or before the merge" rule: a review at the exact merge instant counts, one second later does not, and neither does a review on an unmerged PR or a merged PR with none. |
+| `int_pr_lifecycle_rolls_many_reviews_up_to_one_row_per_pr` | Several out-of-order reviews collapse to one row with the earliest and latest times, reviewers counted once each and both flags set; a PR with no reviews still appears. |
+
+Each unit test was shown to fail when the logic it covers is broken (the post-merge guard removed, distinct reviewers
+replaced by a plain count, the first review taken from the latest one, `<=` changed to `<`, and coverage ignoring the
+merge time), and to fail on a wrong expected value.
+
+**Not covered yet:** source freshness checks (the raw tables now carry `_loaded_at`, so they can be added). Only
+`fct_pull_requests` has a model contract so far.
 
 ## Semantic layer
 

@@ -1,0 +1,47 @@
+version: 2
+
+# Unit tests run the model's SQL on a handful of made-up rows, so they check the logic itself and
+# give the same answer whatever the live GitHub data looks like. Only the columns that matter to
+# each case are filled in; the rest are null.
+
+unit_tests:
+  - name: int_pr_lifecycle_review_after_merge_has_no_time_in_review
+    description: >
+      A review that arrives after the PR was already merged is not review time. PR 1 was merged after
+      24 hours and its only review came 2 days later, so time_in_review_hours must be null (not negative).
+      PR 2 is the control: reviewed before it was merged, so it does get a time in review.
+    model: int_pr_lifecycle
+    given:
+      - input: ref('stg_github__pull_requests')
+        rows:
+          - {pr_number: 1, pr_state: closed, is_merged: true, author_login: alice, created_at: "2024-03-01 10:00:00", merged_at: "2024-03-02 10:00:00", closed_at: "2024-03-02 10:00:00"}
+          - {pr_number: 2, pr_state: closed, is_merged: true, author_login: alice, created_at: "2024-03-01 10:00:00", merged_at: "2024-03-02 10:00:00", closed_at: "2024-03-02 10:00:00"}
+      - input: ref('stg_github__pr_reviews')
+        rows:
+          - {pr_number: 1, review_id: 101, reviewer_login: bob, review_state: COMMENTED, submitted_at: "2024-03-04 10:00:00"}
+          - {pr_number: 2, review_id: 201, reviewer_login: bob, review_state: APPROVED, submitted_at: "2024-03-01 12:00:00"}
+    expect:
+      rows:
+        - {pr_number: 1, was_reviewed: true, review_wait_hours: 72.0, time_in_review_hours: null, lead_time_hours: 24.0, pr_lifecycle_stage: merged}
+        - {pr_number: 2, was_reviewed: true, review_wait_hours: 2.0, time_in_review_hours: 22.0, lead_time_hours: 24.0, pr_lifecycle_stage: merged}
+
+  - name: int_pr_lifecycle_rolls_many_reviews_up_to_one_row_per_pr
+    description: >
+      Several reviews on one PR, listed out of order, must collapse to a single row, with the times taken from the
+      earliest and latest review (not from row order), reviewers counted once each, and both flags set. A PR with no
+      reviews at all must still appear, with zeros and nulls and not be dropped by the join.
+    model: int_pr_lifecycle
+    given:
+      - input: ref('stg_github__pull_requests')
+        rows:
+          - {pr_number: 10, pr_state: closed, is_merged: true, author_login: carol, created_at: "2024-05-01 09:00:00", merged_at: "2024-05-03 09:00:00", closed_at: "2024-05-03 09:00:00"}
+          - {pr_number: 11, pr_state: open, is_merged: false, author_login: carol, created_at: "2024-05-01 09:00:00"}
+      - input: ref('stg_github__pr_reviews')
+        rows:
+          - {pr_number: 10, review_id: 3, reviewer_login: bob, review_state: APPROVED, submitted_at: "2024-05-02 15:00:00"}
+          - {pr_number: 10, review_id: 1, reviewer_login: alice, review_state: CHANGES_REQUESTED, submitted_at: "2024-05-01 13:00:00"}
+          - {pr_number: 10, review_id: 2, reviewer_login: alice, review_state: COMMENTED, submitted_at: "2024-05-02 09:00:00"}
+    expect:
+      rows:
+        - {pr_number: 10, first_reviewed_at: "2024-05-01 13:00:00", last_reviewed_at: "2024-05-02 15:00:00", review_count: 3, distinct_reviewer_count: 2, was_approved: true, had_changes_requested: true, was_reviewed: true, review_wait_hours: 4.0, time_in_review_hours: 44.0, lead_time_hours: 48.0, pr_lifecycle_stage: merged}
+        - {pr_number: 11, first_reviewed_at: null, last_reviewed_at: null, review_count: 0, distinct_reviewer_count: 0, was_approved: false, had_changes_requested: false, was_reviewed: false, review_wait_hours: null, time_in_review_hours: null, lead_time_hours: null, pr_lifecycle_stage: open}

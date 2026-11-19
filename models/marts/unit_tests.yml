@@ -1,0 +1,43 @@
+version: 2
+
+# Unit tests for the fact table: the model's SQL is run on made-up rows (see models/intermediate/unit_tests.yml).
+
+unit_tests:
+  - name: fct_pull_requests_review_after_merge_is_not_review_coverage
+    description: >
+      PR 1 was merged on 2 March and its only review came on 4 March. It was reviewed (was_reviewed) but not before
+      it was merged, so it must not count toward review coverage: was_reviewed_before_merge is false. data_as_of
+      is the time the data was pulled, taken from the staging rows.
+    model: fct_pull_requests
+    given:
+      - input: ref('int_pr_lifecycle')
+        rows:
+          - {pr_number: 1, author_login: alice, is_merged: true, was_reviewed: true, opened_at: "2024-03-01 10:00:00", merged_at: "2024-03-02 10:00:00", first_reviewed_at: "2024-03-04 10:00:00"}
+      - input: ref('stg_github__pull_requests')
+        rows:
+          - {pr_number: 1, _loaded_at: "2026-11-01 18:34:18"}
+    expect:
+      rows:
+        - {pr_number: 1, was_reviewed: true, was_reviewed_before_merge: false, data_as_of: "2026-11-01 18:34:18"}
+
+  - name: fct_pull_requests_review_coverage_boundary
+    description: >
+      Pins down the "at or before the merge" rule. A review at the exact merge instant counts; one second later does
+      not; a review on a PR that was never merged does not count; and a merged PR with no review does not count.
+    model: fct_pull_requests
+    given:
+      - input: ref('int_pr_lifecycle')
+        rows:
+          - {pr_number: 1, author_login: alice, is_merged: true, was_reviewed: true, merged_at: "2024-03-02 10:00:00", first_reviewed_at: "2024-03-02 10:00:00"}
+          - {pr_number: 2, author_login: alice, is_merged: true, was_reviewed: true, merged_at: "2024-03-02 10:00:00", first_reviewed_at: "2024-03-02 10:00:01"}
+          - {pr_number: 3, author_login: alice, is_merged: false, was_reviewed: true, first_reviewed_at: "2024-03-02 10:00:00"}
+          - {pr_number: 4, author_login: alice, is_merged: true, was_reviewed: false, merged_at: "2024-03-02 10:00:00"}
+      - input: ref('stg_github__pull_requests')
+        rows:
+          - {pr_number: 1, _loaded_at: "2026-11-01 18:34:18"}
+    expect:
+      rows:
+        - {pr_number: 1, was_reviewed_before_merge: true}
+        - {pr_number: 2, was_reviewed_before_merge: false}
+        - {pr_number: 3, was_reviewed_before_merge: false}
+        - {pr_number: 4, was_reviewed_before_merge: false}
