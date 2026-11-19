@@ -1,5 +1,6 @@
 import streamlit as st
 
+import presets
 import queries
 
 st.set_page_config(page_title="PR Lifecycle & DORA Metrics", layout="wide")
@@ -66,16 +67,51 @@ st.caption(
     "A merged pull request is used as a proxy for a deployment."
 )
 
+def apply_preset(span):
+    """Button callback: runs before the page redraws, so the date picker already shows the new range."""
+    st.session_state["date_range"] = span
+
+
+# The picker's value lives in session state so the preset buttons can set it. If a remembered range no longer
+# fits the data (for example after the data was refreshed), fall back to the whole window.
+remembered = st.session_state.get("date_range")
+if remembered is None:
+    st.session_state["date_range"] = (first_day, last_day)
+elif isinstance(remembered, (tuple, list)) and len(remembered) == 2:
+    fitted = presets.clamp(tuple(remembered), first_day, last_day)
+    if fitted != tuple(remembered):
+        st.session_state["date_range"] = fitted
+# A one-date tuple means the person is half-way through picking a range: leave it alone so they can pick the end.
+
 with st.sidebar:
     st.header("Filters")
     picked = st.date_input(
         "Date range",
-        value=(first_day, last_day),
         min_value=first_day,
         max_value=last_day,
         key="date_range",
-        help="Merged-PR figures use the day a PR was merged; opened-PR figures use the day it was opened.",
+        help="Merged-PR figures use the day a PR was merged; opened-PR figures use the day it was opened. "
+        "The buttons below pick common ranges, which is easier than clicking two dates.",
     )
+    choices = presets.presets(first_day, last_day)
+    current = tuple(picked) if isinstance(picked, (tuple, list)) else None
+    layout = [[presets.ALL_TIME, presets.LAST_12_MONTHS], [label for label in choices if label.isdigit()]]
+    for row in layout:
+        columns = st.columns(max(len(row), 1))
+        for column, label in zip(columns, row):
+            span = choices[label]
+            column.button(
+                label,
+                key=f"preset_{label.lower().replace(' ', '_')}",
+                on_click=apply_preset,
+                args=(span,),
+                type="primary" if current == span else "secondary",  # the active range is highlighted
+                width="stretch",
+                help=(
+                    f"{span[0]:%Y-%m-%d} to {span[1]:%Y-%m-%d}"
+                    + (" (ends on the day the data was pulled, not today)" if label == presets.LAST_12_MONTHS else "")
+                ),
+            )
     include_bots = st.checkbox(
         "Include bot PRs",
         value=False,

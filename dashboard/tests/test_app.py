@@ -316,3 +316,98 @@ def test_no_chart_is_ever_drawn_with_nothing_in_it(date_range, include_bots):
     at = run_app(date_range=date_range, include_bots=include_bots)
     for chart in charts(at):
         assert any(v > 0 for v in numeric_values(chart)), f"an empty chart was drawn: {chart.proto.spec[:120]}"
+
+
+# ---------- date presets ----------
+
+import duckdb  # noqa: E402
+
+import presets  # noqa: E402
+
+PRESET_KEYS = {
+    "All time": "preset_all_time", "Last 12 months": "preset_last_12_months",
+    "2023": "preset_2023", "2024": "preset_2024", "2025": "preset_2025",
+}
+FIRST_DAY, LAST_DAY = datetime.date(2023, 1, 1), datetime.date(2026, 11, 1)
+EXPECTED_RANGES = presets.presets(FIRST_DAY, LAST_DAY)
+
+
+def raw_merged_count(span, include_bots):
+    """Merged PRs in the span, counted straight from the raw table (no dbt model, no dashboard code)."""
+    con = duckdb.connect(str(queries.DB_PATH), read_only=True)
+    try:
+        return con.execute(
+            "select count(*) from raw.github_pull_requests where merged_at is not null "
+            "and cast(cast(merged_at as timestamp) as date) between ? and ? and (? or author not like '%[bot]')",
+            [span[0], span[1], include_bots],
+        ).fetchone()[0]
+    finally:
+        con.close()
+
+
+def button_types(at):
+    return {label: at.button(key=key).proto.type for label, key in PRESET_KEYS.items()}
+
+
+def test_the_five_preset_buttons_are_there_in_order():
+    at = run_app()
+    assert [b.label for b in at.sidebar.button] == ["All time", "Last 12 months", "2023", "2024", "2025"]
+    assert [b.key for b in at.sidebar.button] == list(PRESET_KEYS.values())
+
+
+@pytest.mark.parametrize("include_bots", [False, True], ids=["humans", "all-prs"])
+@pytest.mark.parametrize("label", list(PRESET_KEYS))
+def test_each_preset_sets_the_date_picker_and_the_figures_follow(label, include_bots):
+    at = run_app(include_bots=include_bots)
+    at.button(key=PRESET_KEYS[label]).click().run()
+    assert not at.exception
+    span = EXPECTED_RANGES[label]
+    assert tuple(at.date_input(key="date_range").value) == span
+    assert tiles(at)["Merged PRs"] == f"{raw_merged_count(span, include_bots):,}"
+    assert any(f"{span[0]:%Y-%m-%d} to {span[1]:%Y-%m-%d}" in c.value for c in at.caption)
+
+
+def test_known_preset_results_for_humans():
+    expected = {"All time": "207", "2023": "88", "2024": "92", "2025": "26"}
+    for label, merged in expected.items():
+        at = run_app()
+        at.button(key=PRESET_KEYS[label]).click().run()
+        assert tiles(at)["Merged PRs"] == merged, label
+
+
+def test_the_active_preset_is_highlighted_and_a_custom_range_highlights_none():
+    at = run_app()
+    assert button_types(at) == {"All time": "primary", "Last 12 months": "secondary", "2023": "secondary",
+                                "2024": "secondary", "2025": "secondary"}
+    at.button(key="preset_2024").click().run()
+    assert [label for label, kind in button_types(at).items() if kind == "primary"] == ["2024"]
+    at.date_input(key="date_range").set_value((datetime.date(2024, 3, 1), datetime.date(2024, 4, 30))).run()
+    assert "primary" not in button_types(at).values()
+    assert not at.exception
+
+
+def test_a_preset_rescues_a_half_finished_date_pick():
+    at = run_app()
+    at.date_input(key="date_range").set_value((datetime.date(2024, 5, 1),)).run()
+    assert any("end date" in i.value for i in at.info)
+    assert len(at.date_input(key="date_range").value) == 1  # the half-finished pick was left alone, not reset
+    at.button(key="preset_2024").click().run()
+    assert not any("end date" in i.value for i in at.info)
+    assert tiles(at)["Merged PRs"] == "92"
+
+
+def test_presets_keep_the_bot_toggle_and_the_weekly_monthly_choice():
+    at = run_app(include_bots=True)
+    at.radio(key="grain").set_value("Weekly").run()
+    at.button(key="preset_2024").click().run()
+    assert at.checkbox(key="include_bots").value is True and at.radio(key="grain").value == "Weekly"
+    assert tiles(at)["Merged PRs"] == "109"
+
+
+def test_a_preset_can_be_followed_by_a_manual_change_and_another_preset():
+    at = run_app()
+    at.button(key="preset_2023").click().run()
+    at.date_input(key="date_range").set_value((datetime.date(2023, 2, 1), datetime.date(2023, 2, 28))).run()
+    assert tiles(at)["Merged PRs"] == f"{raw_merged_count((datetime.date(2023, 2, 1), datetime.date(2023, 2, 28)), False):,}"
+    at.button(key="preset_all_time").click().run()
+    assert tiles(at)["Merged PRs"] == "207" and not at.exception
