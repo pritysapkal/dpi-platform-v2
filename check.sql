@@ -1,1 +1,0 @@
-SELECT * FROM main.stg_github__pull_requests LIMIT 20;

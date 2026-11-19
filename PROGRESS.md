@@ -145,12 +145,13 @@ From hands-on testing of the dashboard.
 
 **State now (2026-11-19):** **490 tests** (agent 255, ingestion 32, dashboard 203). The agent and ingestion suites (287) were re-run on 2026-11-19 and passed; the dashboard suite (203) passed the same day before the last commit. The eval set has 23 questions, last run 23/23. `dbt build` ran green in CI on `8dfdb16` (8 models, 61 tests).
 
+**Housekeeping (2026-11-19):** deleted three tracked scratch files from the first days of the project (`check.sql`, `verify_data.py`, `verify_staging.py`: one-off checks that nothing referred to; the two Python files opened `dev.duckdb` in write mode). They remain in git history.
+
 ## Next Immediate Step
 The batch in progress, in order:
-1. Delete the tracked scratch files `check.sql`, `verify_data.py` and `verify_staging.py`.
-2. Model contract on `fct_pull_requests`.
-3. dbt unit tests: the post-merge-review case plus two edge cases.
-4. Add `pytest` (the subset that needs no database) and `mf validate-configs` to CI.
+1. Model contract on `fct_pull_requests`.
+2. dbt unit tests: the post-merge-review case plus two edge cases.
+3. Add `pytest` (the subset that needs no database) and `mf validate-configs` to CI.
 
 Then Phase 2, per the decisions above (planned, not started): the CI split with fixture data and a scheduled daily workflow; source freshness; the public Streamlit deploy from a Parquet snapshot; optionally growing the eval set toward about 35 questions.
 
