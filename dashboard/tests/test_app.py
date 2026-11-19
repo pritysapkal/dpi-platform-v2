@@ -411,3 +411,81 @@ def test_a_preset_can_be_followed_by_a_manual_change_and_another_preset():
     assert tiles(at)["Merged PRs"] == f"{raw_merged_count((datetime.date(2023, 2, 1), datetime.date(2023, 2, 28)), False):,}"
     at.button(key="preset_all_time").click().run()
     assert tiles(at)["Merged PRs"] == "207" and not at.exception
+
+
+# ---------- whole-number axes and wide bars ----------
+
+COUNT_FIELDS = {"merged_prs", "PRs", "open PRs", "prs_reviewed", "prs_opened"}  # the PR-count charts
+
+
+def chart_specs(at):
+    return [json.loads(c.proto.spec) for c in charts(at)]
+
+
+def count_channel(spec):
+    """The channel (x or y) that holds the PR count, or None if this isn't a PR-count chart."""
+    for channel in ("x", "y"):
+        encoding = spec.get("encoding", {}).get(channel, {})
+        if encoding.get("field") in COUNT_FIELDS:
+            return encoding
+    return None
+
+
+def test_every_pr_count_chart_has_a_whole_number_axis_starting_at_zero():
+    at = run_app(date_range=Y2024, include_bots=True)
+    found = {}
+    for spec in chart_specs(at):
+        channel = count_channel(spec)
+        if channel:
+            found[channel["field"]] = channel
+    assert set(found) == COUNT_FIELDS  # all five PR-count charts are on the page
+    for field, channel in found.items():
+        assert channel["axis"]["format"] == "d" and channel["axis"]["tickMinStep"] == 1, field
+        assert channel["scale"]["domainMin"] == 0, field
+
+
+def test_whole_number_axes_also_hold_for_tiny_counts():
+    # a window with just one PR: the count axis must still be whole numbers, not 0.5 steps
+    at = run_app(date_range=NO_MERGES, include_bots=True)
+    for spec in chart_specs(at):
+        channel = count_channel(spec)
+        if channel:
+            assert channel["axis"]["format"] == "d" and channel["axis"]["tickMinStep"] == 1
+
+
+def test_the_non_count_charts_are_left_alone():
+    # hours and shares are not PR counts, so they keep Streamlit's own axes (no integer format forced on them)
+    for spec in chart_specs(run_app(date_range=Y2024, include_bots=True)):
+        if count_channel(spec) is None:
+            assert '"format": "d"' not in json.dumps(spec)
+
+
+def test_the_monthly_bars_sit_on_a_band_axis_so_they_are_wide():
+    at = run_app(date_range=Y2024, include_bots=True)
+    spec = json.loads(charts(at)[0].proto.spec)
+    assert spec["mark"]["type"] == "bar"
+    x = spec["encoding"]["x"]
+    assert x["type"] == "ordinal" and x["sort"] is None and x["field"] == "period_label"  # not a time axis of slivers
+    assert x["scale"]["paddingInner"] <= 0.2
+    labels = chart_data(charts(at)[0])["period_label"].tolist()
+    assert labels == [f"2024-{m:02d}" for m in range(1, 13)]  # 12 monthly bars, in calendar order
+
+
+def test_weekly_bars_are_labelled_with_their_monday_and_stay_in_order():
+    at = run_app(date_range=Y2024, include_bots=True)
+    at.radio(key="grain").set_value("Weekly").run()
+    data = chart_data(charts(at)[0])
+    labels = data["period_label"].tolist()
+    assert len(labels) > 50 and labels == sorted(labels)
+    assert all(datetime.date.fromisoformat(label).weekday() == 0 for label in labels)  # every label is a Monday
+    assert labels == [d.strftime("%Y-%m-%d") for d in data["period_start"]]
+
+
+def test_the_bar_labels_line_up_with_the_figures_for_both_groupings():
+    for grain_label, grain in (("Monthly", "month"), ("Weekly", "week")):
+        at = run_app(date_range=Y2024, include_bots=False)
+        at.radio(key="grain").set_value(grain_label).run()
+        shown = chart_data(charts(at)[0])
+        expected = queries.trend(*Y2024, False, grain)
+        assert shown["merged_prs"].tolist() == expected["merged_prs"].tolist()
+        assert [pd_ts.date() for pd_ts in shown["period_start"]] == [d.date() for d in expected["period_start"]]

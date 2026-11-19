@@ -1,5 +1,6 @@
 import streamlit as st
 
+import charts
 import presets
 import queries
 
@@ -187,7 +188,14 @@ else:
     trend = load_trend(start, end, include_bots, grain)
 
     st.markdown("**Deployment frequency: PRs merged per " + unit + "**")
-    st.bar_chart(trend, x="period_start", y="merged_prs", x_label=f"{unit} starting", y_label="merged PRs")
+    st.altair_chart(
+        charts.count_bar(
+            trend.assign(period_label=charts.period_labels(trend["period_start"], grain)),
+            "period_label", "merged_prs",
+            category_title=f"{unit} starting", value_title="merged PRs", label_angle=-90,
+        ),
+        width="stretch",
+    )
     st.caption(
         f"How many PRs were merged each {unit} (a merge is used as a proxy for a deployment). "
         f"A {unit} with no merges shows as zero. Good looks like steady output without long silent gaps; "
@@ -283,7 +291,10 @@ else:
 
     left, right = st.columns([3, 2])
     with left:
-        st.bar_chart(stages, x="stage", y="PRs", horizontal=True, sort=False, x_label="", y_label="PRs opened in the date range")
+        st.altair_chart(
+            charts.count_bar(stages, "stage", "PRs", category_title="stage", value_title="PRs opened in the date range", horizontal=True),
+            width="stretch",
+        )
         st.caption(
             "What happened to the PRs opened in the date range. Good looks like most PRs getting a review, and most "
             "reviewed PRs ending up approved and merged. A big drop between two bars is where work stalls or "
@@ -322,7 +333,10 @@ else:
     left, right = st.columns([2, 3])
     with left:
         ages = pd.DataFrame(o["age_buckets"], columns=["age", "open PRs"])
-        st.bar_chart(ages, x="age", y="open PRs", sort=False, x_label="how long it has been open", y_label="open PRs")
+        st.altair_chart(
+            charts.count_bar(ages, "age", "open PRs", category_title="how long it has been open", value_title="open PRs", label_angle=-30),
+            width="stretch",
+        )
         st.caption(
             "How many open PRs fall into each age band. Good looks like most open PRs being recent: a pile in the "
             "oldest bands means PRs are being left to go stale rather than merged or closed."
@@ -366,7 +380,10 @@ with col_rev:
     if reviewers.empty:
         st.info("Nobody reviewed anyone else's PR in this date range.")
     else:
-        st.bar_chart(reviewers, x="reviewer", y="prs_reviewed", horizontal=True, sort=False, x_label="", y_label="PRs reviewed")
+        st.altair_chart(
+            charts.count_bar(reviewers, "reviewer", "prs_reviewed", category_title="reviewer", value_title="PRs reviewed", horizontal=True),
+            width="stretch",
+        )
         st.dataframe(reviewers.rename(columns={"prs_reviewed": "PRs reviewed", "reviews": "Reviews", "approvals": "Approvals"}),
                      hide_index=True, width="stretch")
     st.caption(
@@ -379,7 +396,10 @@ with col_auth:
     if authors.empty:
         st.info("No PRs were opened by people in this date range.")
     else:
-        st.bar_chart(authors, x="author", y="prs_opened", horizontal=True, sort=False, x_label="", y_label="PRs opened")
+        st.altair_chart(
+            charts.count_bar(authors, "author", "prs_opened", category_title="author", value_title="PRs opened", horizontal=True),
+            width="stretch",
+        )
         st.dataframe(authors.rename(columns={"prs_opened": "PRs opened", "prs_merged": "Merged", "still_open": "Still open"}),
                      hide_index=True, width="stretch")
     st.caption(
