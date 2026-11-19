@@ -12,7 +12,38 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The workflow only reads the repository, so the token it gets is read-only.
+permissions:
+  contents: read
+
 jobs:
+  # Tests of the Python code that need no database and no secrets: the GitHub fetcher (with fake HTTP
+  # responses), the agent (with a scripted fake model), the dashboard's date and chart helpers. No
+  # dev.duckdb exists here, so the tests that read the real data skip themselves ("dev.duckdb not built",
+  # visible in the -rs report). Those run on the data-backed schedule instead, once the CI split lands.
+  python-tests:
+    name: Python tests (no database)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            agent/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r agent/requirements.txt
+
+      - name: pytest (ingestion, agent, dashboard helpers)
+        run: python -m pytest ingestion_tests agent/tests dashboard/tests -q -rs
+
   dbt-build-and-test:
     runs-on: ubuntu-latest
 
@@ -50,3 +81,10 @@ jobs:
       # against the data just fetched above — this is the real pass/fail gate.
       - name: dbt build (models + tests)
         run: dbt build
+
+      # Checks the MetricFlow definitions against the tables `dbt build` just created, so a broken
+      # metric, dimension or measure fails here and not when someone runs `mf query`.
+      - name: Validate the semantic layer (mf validate-configs)
+        env:
+          PYTHONIOENCODING: utf-8  # the CLI prints a progress spinner; this keeps it from tripping on a narrow console encoding
+        run: mf validate-configs

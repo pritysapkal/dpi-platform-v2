@@ -360,7 +360,10 @@ findings tests check that the README's numbers match the data.
   but means a green run today doesn't guarantee identical numbers tomorrow —
   the underlying repo keeps changing. At scale, I'd separate "does the
   pipeline logic work" (tested against a fixed fixture dataset in CI) from "is
-  production data healthy" (monitored separately against live data).
+  production data healthy" (monitored separately against live data). Today the
+  tests that read the real data don't run in CI at all (see "What CI runs"); the
+  plan is fixture data for the logic tests on every push, and a scheduled daily run
+  against live data for the data-pinned ones.
 - **No orchestration.** The pipeline only runs on `git push` via CI, not on a
   recurring schedule. At scale it would run on a schedule (Airflow, Dagster,
   or even a cron-triggered GitHub Actions workflow) so the marts and metrics
@@ -392,6 +395,20 @@ python -m pytest dashboard/tests       # dashboard numbers, the real app, and th
 
 On Windows, `mf` needs `PYTHONIOENCODING=utf-8` and `DBT_PROFILES_DIR` pointing at the folder
 with your `profiles.yml`.
+
+Run `dbt parse` (or `dbt build`) before `mf validate-configs`. If the project no longer parses, `mf` can
+carry on and validate the *previous* manifest in `target/`, and report success for a config that is
+actually broken. CI avoids this because it starts clean and runs `dbt build` first.
+
+**What CI runs** (`.github/workflows/ci.yml`, on every push to `main` and every pull request):
+- **`python-tests`**: `pytest` on `ingestion_tests`, `agent/tests` and `dashboard/tests` with no database and no
+  secrets, so it is deterministic and also runs for pull requests from forks. The 230 tests that read the real data
+  (`test_tools`, `test_eval_set`, and the dashboard's `test_queries`, `test_app` and `test_findings`) skip themselves
+  with the reason "dev.duckdb not built"; the 260 that need no database run: 32 ingestion, 211 agent and 17
+  dashboard-helper tests.
+- **`dbt-build-and-test`**: the live fetch from GitHub, `dbt build` (models, data tests and unit tests), then
+  `mf validate-configs`, which catches semantic-layer mistakes that parse fine but break against the real tables
+  (a mistyped column in a measure, dimension or entity, or a filter on a dimension that doesn't exist).
 
 ## DPIP Agent
 

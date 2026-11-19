@@ -115,7 +115,7 @@ Goal: stop quoting an average of daily averages as the headline, give every metr
 **Still open from Phase 1**
 - ~~The live eval has not been re-run since the data, tool and prompt changes.~~ Closed on 2026-11-18: 23/23 on `gemini-3.5-flash-lite`, see "Phase 1 follow-up" below.
 - "Median time to first review" is computed slightly differently on the dashboard tile, in the lead-time breakdown and in the agent's eval; only lead time is defined once in MetricFlow.
-- CI still fetches live data and does not run any pytest suite (Phase 2).
+- CI still fetches live data and does not run any pytest suite (Phase 2). *Partly closed on 2026-11-19: CI now runs the tests that need no database and `mf validate-configs`; the data-backed tests still wait for the CI split.*
 
 ## Phase 1 follow-up: live eval, default model and two retry fixes (2026-11-18)
 The live eval that Phase 1 was waiting on was run, and it turned up two real defects in the model client plus a model that was unavailable.
@@ -148,14 +148,13 @@ From hands-on testing of the dashboard.
 **Phase 2 started (2026-11-19):**
 - [x] **Model contract on `fct_pull_requests`**: contract enforced with all 22 columns typed (matching what DuckDB builds), a real primary key on `pr_number` and `NOT NULL` on 14 columns, and descriptions added for the 13 columns that had none. Verified: `dbt build` PASS=69 unchanged, `mf validate-configs` clean, the 2024 `mf query` numbers unchanged, and all 490 tests pass. Tested on a scratch copy that the contract refuses five kinds of bad input: a wrong declared type, a column missing from the YAML, a column missing from the SQL, nulls in a NOT NULL column, and duplicate keys.
 - [x] **dbt unit tests (4)** in `models/intermediate/unit_tests.yml` and `models/marts/unit_tests.yml`: the post-merge-review case at both the intermediate and the fact table, plus two edge cases (the "at or before the merge" boundary, and rolling several out-of-order reviews up to one row with a no-review PR kept). `dbt build` is now PASS=73 (8 models, 61 data tests, 4 unit tests). Each test was mutation-checked on a scratch copy: breaking the covered logic five ways failed exactly the matching tests, and a wrong expected value failed too.
+- [x] **CI runs pytest and `mf validate-configs`.** A new `python-tests` job (no database, no secrets) runs `pytest` on `ingestion_tests`, `agent/tests` and `dashboard/tests`: 260 tests run, 230 skip with "dev.duckdb not built" (the data-backed files `test_tools`, `test_eval_set`, `test_queries`, `test_app`, `test_findings`). The existing job gains `mf validate-configs` after `dbt build`. The workflow also got a read-only `permissions` block. Verified locally by reproducing CI: an export of the committed files with no database or `.env`, a brand-new virtual environment built from the requirement files (identical versions to the local ones), the exact pytest command (260 passed, 230 skipped, exit 0), and `dbt build` on a database holding only the raw tables (PASS=73) followed by `mf validate-configs`. **Not yet seen on GitHub**: the first push is the real test.
+- **Finding about `mf validate-configs`:** from a clean start it fails (exit 1) on mistakes that `dbt parse` accepts (a mistyped column in a measure, dimension or entity, a filter on a missing dimension), which is what makes it worth running in CI. But if `dbt parse` itself fails, `mf` can silently validate the previous `target/` manifest and report success, so locally run `dbt parse` first. Documented in the README.
 
 **Housekeeping (2026-11-19):** deleted three tracked scratch files from the first days of the project (`check.sql`, `verify_data.py`, `verify_staging.py`: one-off checks that nothing referred to; the two Python files opened `dev.duckdb` in write mode). They remain in git history.
 
 ## Next Immediate Step
-The batch in progress, in order:
-1. Add `pytest` (the subset that needs no database) and `mf validate-configs` to CI.
-
-Then Phase 2, per the decisions above (planned, not started): the CI split with fixture data and a scheduled daily workflow; source freshness; the public Streamlit deploy from a Parquet snapshot; optionally growing the eval set toward about 35 questions.
+The batch is finished once the CI changes are green on GitHub. Next, Phase 2, per the decisions above (planned, not started): the CI split with fixture data and a scheduled daily workflow; source freshness; the public Streamlit deploy from a Parquet snapshot; optionally growing the eval set toward about 35 questions.
 
 Phase 3 (not started): incremental fetch and an incremental fact model with a lookback window, BigQuery as a second dbt target, and a Power BI report.
 
