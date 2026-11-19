@@ -393,8 +393,9 @@ python -m pytest agent/tests           # the agent, no API key needed
 python -m pytest dashboard/tests       # dashboard numbers, the real app, and the README's findings
 ```
 
-On Windows, `mf` needs `PYTHONIOENCODING=utf-8` and `DBT_PROFILES_DIR` pointing at the folder
-with your `profiles.yml`.
+`mf` needs `DBT_PROFILES_DIR` pointing at the folder with your `profiles.yml`, on every system:
+unlike `dbt`, it does not look in `~/.dbt` by itself and stops with "Could not find profile". On Windows
+it also needs `PYTHONIOENCODING=utf-8`. CI sets the first one after writing its profile.
 
 Run `dbt parse` (or `dbt build`) before `mf validate-configs`. If the project no longer parses, `mf` can
 carry on and validate the *previous* manifest in `target/`, and report success for a config that is

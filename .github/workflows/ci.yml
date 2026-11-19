@@ -71,6 +71,9 @@ jobs:
                 threads: 4
             target: dev
           EOF
+          # `dbt` finds ~/.dbt on its own, but the `mf` command line does not (it fails with "Could not find
+          # profile"), so tell every later step where the profile lives.
+          echo "DBT_PROFILES_DIR=$HOME/.dbt" >> "$GITHUB_ENV"
 
       - name: Fetch latest PR + review data from GitHub
         env:
