@@ -262,6 +262,23 @@ default) apply to the charts. Every figure is computed over individual PRs, with
 median and p90 as the headline, never an average of daily averages. Each chart has a
 caption saying what it shows and what "good" looks like.
 
+**Date presets.** Under the date picker, one-click buttons choose a common range: *All
+time*, *Last 12 months*, *2023*, *2024* and *2025*. The one that matches the current range
+is highlighted. *Last 12 months* ends on the day the data was pulled, not today, so it
+always selects the same window until the data is refreshed. The buttons are also the easy
+way out of a half-finished pick: the picker only applies a range once both dates are chosen.
+
+**Empty states.** If a date range and filter combination has no pull request or review
+activity at all, the page shows a single message and nothing else (with a hint to tick
+"Include bot PRs" when only bots were active). If there is activity but no merges, the
+Trends section says so instead of drawing empty charts. A test checks that no chart is ever
+drawn with nothing in it.
+
+**Charts.** The PR-count charts have whole-number axes starting at zero, and their bars sit
+on a band axis (one equal slot per bar), so the monthly chart shows wide bars labelled by
+month. The weekly view has about 200 bars over the whole data range (201 weeks), so its bars
+are necessarily thinner.
+
 - **Tiles:** merged PRs, median and p90 lead time, review coverage (merged PRs reviewed
   before the merge) and median time to first review, with "Data as of" from `data_as_of`.
 - **Trends:** PRs merged, median lead time and p90 lead time per week or month.
@@ -285,8 +302,9 @@ running while `dbt build` runs elsewhere (results refresh within 60 seconds).
 
 **Tests:** `python -m pytest dashboard/tests` (needs `dev.duckdb`). The expected numbers
 are recomputed from the raw tables with separate SQL, the real app is run headlessly with
-Streamlit's `AppTest` (with bots on and off, and for 2024), and the findings tests check
-that the README's numbers match the data.
+Streamlit's `AppTest` (with bots on and off, for 2024, for each date preset and for empty
+ranges), the chart builder is tested on its specification (integer axes, band axis), and the
+findings tests check that the README's numbers match the data.
 
 ## Known limitations / what I'd do at scale
 

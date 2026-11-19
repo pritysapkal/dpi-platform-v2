@@ -130,9 +130,32 @@ The live eval that Phase 1 was waiting on was run, and it turned up two real def
 
 **A mistake of mine, caught and fixed.** `write_report()` writes `results.md` itself, and my new report tests fed it a one-question dummy set, so every test run overwrote the real report. The version committed in `197a101` was that corrupted file ("1 questions"). Commit `5860da0` restored it and the tests now write to a temporary folder. Two guard tests keep it from happening again: one proves a test-built report never touches the real file, the other fails unless the committed `results.md` lists every question in `eval_set.json`. Hashing the file before and after the whole suite confirmed it is unchanged.
 
-**State now (2026-11-18):** **440 tests pass** (agent 255, ingestion 32, dashboard 153). The eval set has 23 questions (17 metric, 6 traps). The last Phase 1 checks still hold: `dbt build` PASS=69, `mf validate-configs` clean.
+**State at the end of that follow-up (2026-11-18):** 440 tests (agent 255, ingestion 32, dashboard 153), 23 eval questions, `dbt build` PASS=69 and `mf validate-configs` clean (last run locally on 2026-11-06; CI runs `dbt build` on every push).
+
+## Dashboard polish (2026-11-18 to 2026-11-19)
+From hands-on testing of the dashboard.
+- [x] **Empty states** (`8787207`): when a date range and filter combination has no PR or review activity, the page shows one message and nothing else, with a hint to tick "Include bot PRs" if only bots were active. With activity but no merges, the Trends section says so instead of drawing empty charts (which used to show a `0.000000` axis). A property test checks that no chart is ever drawn with nothing in it, over six filter combinations.
+- [x] **Date presets** (`8dfdb16`): All time, Last 12 months, 2023, 2024 and 2025 under the date picker, with the active one highlighted. "Last 12 months" ends on the day the data was pulled, not today. Tested through AppTest for each button with bots on and off. A bug caught while building it (a half-finished date pick would have been reset, so an end date could never be chosen) is fixed and covered by a test.
+- [x] **Whole-number axes and wider bars** (`f56484d`): the five PR-count charts are built with Altair (`dashboard/charts.py`): integer labels, a zero baseline, and a band axis so the monthly bars are wide (labelled `2024-03`; weekly bars are labelled by their Monday). The previous charts already had a minimum tick step of 1, so the 0.5 ticks seen earlier were mostly the empty-chart case. **The rendered bar width was not checked visually**, only the mechanism (band axis, 12% padding, no fixed size).
+- CI: green on `8dfdb16`; the run for `f56484d` was still in progress when this was written.
+
+**Decisions recorded (2026-11-19) for the Phase 2 items not yet started**
+- **CI split:** fixtures for the code-logic tests on every push and pull request; a scheduled daily workflow for the live fetch, `dbt build`, source freshness and the tests pinned to live data (`test_findings`, the live-number tests in `test_tools`).
+- **Public deploy:** publish GitHub logins and PR titles (already public); never deploy the agent.
+
+**State now (2026-11-19):** **490 tests** (agent 255, ingestion 32, dashboard 203). The agent and ingestion suites (287) were re-run on 2026-11-19 and passed; the dashboard suite (203) passed the same day before the last commit. The eval set has 23 questions, last run 23/23. `dbt build` ran green in CI on `8dfdb16` (8 models, 61 tests).
 
 ## Next Immediate Step
-- Read the README findings once and adjust the tone so it sounds like you.
-- Phase 2 (not started): source freshness checks (the raw tables now have `_loaded_at`), a dbt unit test for the review-after-merge edge case, a model contract on the fact table, the CI split (fixture data and pytest on pull requests, scheduled live refresh), a public Streamlit deploy from a Parquet snapshot, and growing the eval set toward about 35 questions. CI still does not run any pytest suite.
-- Phase 3 (not started): incremental fetch and an incremental fact model with a lookback window, BigQuery as a second dbt target, and a Power BI report.
+The batch in progress, in order:
+1. Delete the tracked scratch files `check.sql`, `verify_data.py` and `verify_staging.py`.
+2. Model contract on `fct_pull_requests`.
+3. dbt unit tests: the post-merge-review case plus two edge cases.
+4. Add `pytest` (the subset that needs no database) and `mf validate-configs` to CI.
+
+Then Phase 2, per the decisions above (planned, not started): the CI split with fixture data and a scheduled daily workflow; source freshness; the public Streamlit deploy from a Parquet snapshot; optionally growing the eval set toward about 35 questions.
+
+Phase 3 (not started): incremental fetch and an incremental fact model with a lookback window, BigQuery as a second dbt target, and a Power BI report.
+
+Your own tasks:
+- Rewrite the README findings in your own voice. `dashboard/tests/test_findings.py` checks exact phrases from the findings, so if you reword a sentence, update the phrase list in that file too.
+- Update the DPIP bullets on your resume; the old "500 PRs" figures are outdated. Verified current facts: 523 PRs (every PR since 2023-01-01), 288 merged, 835 reviews; 8 dbt models and 61 tests; 490 automated tests; MetricFlow metrics (median, p90) at PR grain; a Streamlit dashboard; an LLM agent with 7 tools, code-enforced guardrails and a 23-question eval at 23/23.
