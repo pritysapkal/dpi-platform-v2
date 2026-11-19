@@ -480,24 +480,23 @@ deleting it, so earlier scores stay visible. Full report:
 | 2026-10-06, before: the model computes dates itself | 17 | **16/17** | 17/17 | 11/11 | 5/6 | 0 | FAIL |
 | 2026-10-06, targeted check after the fix (t03 + 3 new) | 4 | **4/4** | 4/4 | 3/3 | 1/1 | 0 | PASS |
 | 2026-10-06, after: dates resolved in code, full set | 20 | **20/20** | 20/20 | 14/14 | 6/6 | 0 | PASS |
-| **2026-11-18, after Phase 1** (523 PRs, metrics from `fct_pull_requests`, p90 and bot option, new prompt), the original 20 questions | 20 | **20/20** | 20/20 | 14/14 | 6/6 | 0 | PASS |
-| 2026-11-18, the 3 new questions on the humans-only option and the p90 (q15 to q17) | 3 | **3/3** | 3/3 | 3/3 | – | 0 | – |
+| **2026-11-19, after Phase 1: one uninterrupted run of all 23 questions** (523 PRs, metrics from `fct_pull_requests`, p90 and bot option, new prompt) | 23 | **23/23** | 23/23 | 17/17 | 6/6 | 0 | PASS |
 
-All 23 questions together: **23/23**, 23/23 correct tools, 17/17 numbers, 6/6 traps, 0 API errors
-(`results.md` has the per-question table). `gemini-3.8-flash` was **not evaluated**: the model was
-unavailable (503/504 errors on every question) on 2026-11-18, so the default is
-`gemini-3.5-flash-lite`.
+This is the current result: a single process, 8.5 minutes, no API errors (two 503 errors mid-run were retried
+and recovered). It includes q15 to q17, which test the humans-only option and the p90 directly.
+`gemini-3.8-flash` was **not evaluated**: the model was unavailable (503/504 errors on every question) on
+2026-11-18, so the default is `gemini-3.5-flash-lite`.
 
-How the November run was assembled, for transparency: `q01` to `q04` passed in a first attempt that
-a dropped connection then crashed (which led to retrying network errors); `q05` onwards ran after
-that fix with no API errors; and `q15` to `q17` were added and run afterwards on their own
-(`--only q15,q16,q17`), with the agent unchanged. During `q16` the model returned two 503 errors
-and the retry logic recovered.
+For transparency, two earlier attempts are not the current result. A first run on 2026-11-18 also scored
+23/23 but was put together in pieces (a dropped connection crashed it part-way, which led to retrying network
+errors, and q15 to q17 were added and run afterwards); it is kept in `runs/history/`. A second run overnight
+was discarded: the computer went offline for about four hours, so 9 questions failed with connection errors,
+not wrong answers (the 14 that got an answer all passed).
 
-Reading the November answers, not just the scores: every metric answer says whether bot PRs are
-included, the lead-time answers quote the p90 next to the median, "how many PRs are currently
-open?" is dated to the pull ("as of the data last pulled", 2026-11-01), and in `q15` and `q17` the
-model chose `include_bots=false` on its own from the wording ("written by people", "human-written").
+Reading the answers, not just the scores: all 12 answers built on the metric tools say whether bot PRs are
+included, all 7 lead-time answers quote the p90 next to the median, "how many PRs are currently open?" is dated
+to the pull ("as of the data last pulled", 2026-11-01), and in `q15` and `q17` the model chose
+`include_bots=false` on its own from the wording ("written by people", "human-written").
 
 ### Known limitations / failure cases
 
@@ -536,13 +535,14 @@ These come from what actually happened during development and the eval runs.
   answered 76 open PRs without saying that's as of the snapshot, not today. The prompt
   now asks it to say so, and in the 2026-11-18 run it did ("as of the data last pulled
   ... 2026-11-01").
-- **Tool calls aren't always efficient.** In the 2026-11-18 run two answers (q09, q10)
-  used 5 of the 6 allowed calls, partly on `list_tables`/`get_schema` exploration the
-  system prompt could make unnecessary, and one (q10) called `resolve_period` for a period
-  that was already explicit. That is harmless but costs calls. In October the same
-  pattern showed up on q07 and q09, and on q05, q08 and q10.
+- **Tool calls aren't always efficient, and vary from run to run.** In the 2026-11-19 run
+  q10 used all 6 allowed calls and q09 used 5, partly on `list_tables`/`get_schema`
+  exploration the system prompt could make unnecessary, and q08 and q10 called
+  `resolve_period` for periods that were already explicit. Both still passed, but q10 sits
+  right at the limit. The earlier November run used 5 calls on q10, so even at temperature 0
+  the number of calls is not stable. In October the same pattern showed up on q07 and q09.
 - **The loop's date check is a safety net that the eval never triggered.** In
-  both 20/20 runs (October and November) the model always passed phrases, so the check
+  every full run (October and November) the model always passed phrases, so the check
   never had to reject anything. Only the unit tests (including a replay of the original t03
   mistake) show that it works.
 - **Dates inside free-form SQL aren't checked.** If the model answers a

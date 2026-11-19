@@ -1,13 +1,13 @@
 # DPIP Agent — eval results
 
-Report generated 2026-11-18. 23 questions: 17 metric questions and 6 traps. Ground truth is computed by SQL against `dev.duckdb` at eval time (see `eval_set.json`). Runs use no fallback model, so every column is exactly one model.
+Report generated 2026-11-19. 23 questions: 17 metric questions and 6 traps. Ground truth is computed by SQL against `dev.duckdb` at eval time (see `eval_set.json`). Runs use no fallback model, so every column is exactly one model.
 
 ## Scorecard
 
 | Model | Status | Run date | Temperature | Overall | Correct tools | Numbers correct | Traps handled | API errors |
 |---|---|---|---|---|---|---|---|---|
 | `gemini-3.8-flash` | not evaluated — model unavailable (503/504) on 2026-11-18 | – | – | – | – | – | – | – |
-| `gemini-3.5-flash-lite` | complete | 2026-11-18 | 0 | **23/23** | 23/23 | 17/17 | 6/6 | 0 |
+| `gemini-3.5-flash-lite` | complete | 2026-11-19 | 0 | **23/23** | 23/23 | 17/17 | 6/6 | 0 |
 
 ## Run history (before / after)
 
@@ -19,6 +19,7 @@ Every run is kept. Archived runs live in `runs/history/`. Scores use the current
 | 2026-10-06 20:27:11 | `gemini-3.5-flash-lite` | 4 | **4/4** | 4/4 | 3/3 | 1/1 | PASS |
 | 2026-10-06 20:27:59 | `gemini-3.5-flash-lite` | 20 | **20/20** | 20/20 | 14/14 | 6/6 | PASS |
 | 2026-11-18 19:48:31 | `gemini-3.5-flash-lite` | 23 | **23/23** | 23/23 | 17/17 | 6/6 | PASS |
+| 2026-11-19 00:35:56 | `gemini-3.5-flash-lite` | 23 | **23/23** | 23/23 | 17/17 | 6/6 | PASS |
 
 ## Per-question results
 
