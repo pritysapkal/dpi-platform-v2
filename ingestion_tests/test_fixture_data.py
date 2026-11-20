@@ -109,6 +109,9 @@ def test_the_tags_say_what_is_true():
             assert p.created.startswith("2024-02-29") and p.merged.startswith("2024-02-29")
         if p.state == "open" and "open_ancient_never_reviewed" in p.tags:
             assert (PULLED - when(p.created)).days > 2 * 365 and not p.reviews
+        if "many_reviews_one_reviewer" in p.tags:
+            counts = {who: sum(1 for x in p.reviews if x[1] == who) for who in {x[1] for x in p.reviews}}
+            assert max(counts.values()) == 5  # five reviews by one person on this one PR
         if "bot_reviewer" in p.tags:
             assert any(fx.is_bot(x[1]) for x in p.reviews)
     assert by_number[1009].reviews[0][3] == by_number[1009].merged
@@ -176,7 +179,7 @@ def types_of(con, table):
 
 def test_the_loader_creates_the_raw_tables_with_the_production_types(tmp_path):
     db = tmp_path / "dev.duckdb"
-    assert load_fixture.load(db) == {"pull_requests": 50, "reviews": 36}
+    assert load_fixture.load(db) == {"pull_requests": 50, "reviews": 40}
     con = duckdb.connect(str(db), read_only=True)
     for table, expected in EXPECTED_TYPES.items():
         assert [tuple(r) for r in types_of(con, table)] == expected  # dates stay text, as fetch_prs.py leaves them
@@ -191,7 +194,7 @@ def test_the_loaded_rows_match_the_case_table(tmp_path):
     load_fixture.load(db)
     con = duckdb.connect(str(db), read_only=True)
     assert con.execute("select count(*) filter (where merged), count(*) filter (where author like '%[bot]') from raw.github_pull_requests").fetchone() == (39, 14)
-    assert con.execute("select count(distinct review_id) from raw.github_pr_reviews").fetchone()[0] == 36
+    assert con.execute("select count(distinct review_id) from raw.github_pr_reviews").fetchone()[0] == 40
 
 
 def test_loading_twice_is_fine(tmp_path):
@@ -232,7 +235,7 @@ def test_the_loader_command_line_needs_an_explicit_path():
 def test_the_command_line_loads_into_a_new_file(tmp_path):
     db = tmp_path / "cli.duckdb"
     result = subprocess.run([sys.executable, "-B", str(FIXTURES / "load_fixture.py"), str(db)], capture_output=True, text=True)
-    assert result.returncode == 0 and "loaded 50 PRs and 36 reviews" in result.stdout
+    assert result.returncode == 0 and "loaded 50 PRs and 40 reviews" in result.stdout
 
 
 # ---------- period_facts(): the answer key for date windows ----------

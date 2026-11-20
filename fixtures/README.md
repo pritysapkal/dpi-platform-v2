@@ -51,6 +51,7 @@ Each case is a pull request on purpose. The tag is also in the case table, and a
 | `window_start_day` | 1001 | created on 2023-01-01, the first day of the data window |
 | `normal_reviewed_merge` | 1001, 1005, 1015, 1018, 1021, 1031, 1036, 1040, 1044, 1047 | an ordinary PR: reviewed, approved, merged |
 | `multi_review` | 1003, 1014, 1028, 1035 | several reviews from different people on one PR |
+| `many_reviews_one_reviewer` | 1025 | one person leaves five reviews on a single PR, so ranking reviewers by reviews and by PRs reviewed gives different orders |
 | `slow_merge_week` | 1007, 1025, 1028, 1042 | took a week to merge, so the lead-time tail is not empty |
 | `bot_merged_no_review` | 1002, 1006, 1017, 1019, 1022, 1026, 1030, 1032, 1033, 1037, 1041, 1048 | a dependabot PR merged within hours, never reviewed |
 | `bot_closed_unmerged` | 1013, 1046 | a bot PR closed without merging |
@@ -89,7 +90,7 @@ reproduces every one of them, and that this table matches.
 | Fact | Value |
 |---|---|
 | PRs | 50 |
-| reviews | 36 |
+| reviews | 40 |
 | merged | 39 |
 | closed without merge | 6 |
 | still open | 5 |

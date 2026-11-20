@@ -138,8 +138,11 @@ CASES = [
        reviews=(r(5017, "dave", "COMMENTED", "2024-03-05T10:00:00Z"),),
        tags=("open_reviewed_not_approved",)),
     PR(1025, "Make timeouts configurable per request", "dave", "2024-03-11T10:00:00Z", merged="2024-03-18T10:00:00Z",
-       reviews=(r(5018, "erin", "APPROVED", "2024-03-17T10:00:00Z"),),
-       tags=("slow_merge_week",)),
+       # erin approves, then comments four more times on the same PR: five reviews of ONE PR (so reviews > PRs reviewed)
+       reviews=(r(5018, "erin", "APPROVED", "2024-03-17T10:00:00Z"), r(5101, "erin", "COMMENTED", "2024-03-17T11:00:00Z"),
+                r(5102, "erin", "COMMENTED", "2024-03-17T12:00:00Z"), r(5103, "erin", "COMMENTED", "2024-03-17T13:00:00Z"),
+                r(5104, "erin", "COMMENTED", "2024-03-17T14:00:00Z")),
+       tags=("slow_merge_week", "many_reviews_one_reviewer")),
     PR(1026, "Bump anyio from 4.2.0 to 4.3.0", "dependabot[bot]", "2024-04-01T08:00:00Z", merged="2024-04-01T10:00:00Z",
        tags=("bot_merged_no_review",)),
     PR(1027, "Try an alternative parser", "ivan", "2024-04-08T10:00:00Z", closed="2024-04-12T10:00:00Z",
@@ -320,7 +323,7 @@ def period_facts(start: str, end: str, humans_only: bool = False) -> dict:
 
 
 REQUIRED_TAGS = {
-    "window_start_day", "normal_reviewed_merge", "multi_review", "slow_merge_week", "bot_merged_no_review",
+    "window_start_day", "normal_reviewed_merge", "multi_review", "many_reviews_one_reviewer", "slow_merge_week", "bot_merged_no_review",
     "bot_closed_unmerged", "bot_reviewer", "bot_only_month", "lookalike_human_login",
     "human_merged_no_review", "only_post_merge_review", "review_at_merge_instant", "review_one_second_after_merge",
     "changes_requested_then_approved", "out_of_order_review_ids", "self_comment",
@@ -336,6 +339,7 @@ TAG_MEANING = {
     "window_start_day": "created on 2023-01-01, the first day of the data window",
     "normal_reviewed_merge": "an ordinary PR: reviewed, approved, merged",
     "multi_review": "several reviews from different people on one PR",
+    "many_reviews_one_reviewer": "one person leaves five reviews on a single PR, so ranking reviewers by reviews and by PRs reviewed gives different orders",
     "slow_merge_week": "took a week to merge, so the lead-time tail is not empty",
     "bot_merged_no_review": "a dependabot PR merged within hours, never reviewed",
     "bot_closed_unmerged": "a bot PR closed without merging",
