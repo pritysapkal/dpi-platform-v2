@@ -45,6 +45,10 @@ select
     -- left after the PR was already merged is not a review of the change.
     coalesce(lc.is_merged and lc.first_reviewed_at <= lc.merged_at, false) as was_reviewed_before_merge,
 
+    -- The same "at or before the merge" rule for approvals. was_approved (any time) is kept as it was; this is the
+    -- version to use when a figure should mean "approved before it was merged".
+    coalesce(lc.is_merged and lc.first_approved_at <= lc.merged_at, false) as was_approved_before_merge,
+
     lc.review_wait_hours,
     lc.time_in_review_hours,
     lc.lead_time_hours,

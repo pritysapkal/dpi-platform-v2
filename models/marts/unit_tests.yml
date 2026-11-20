@@ -41,3 +41,30 @@ unit_tests:
         - {pr_number: 2, was_reviewed_before_merge: false}
         - {pr_number: 3, was_reviewed_before_merge: false}
         - {pr_number: 4, was_reviewed_before_merge: false}
+
+
+  - name: fct_pull_requests_approval_before_merge_boundary
+    description: >
+      The same "at or before the merge" rule for approvals, with was_approved (at any time) left unchanged. PR 1 is
+      approved at the exact merge instant: counts. PR 2 is approved one second after the merge: does not count as
+      approved before merge, though was_approved stays true. PR 3 is approved well before the merge: counts. PR 4 is
+      approved but never merged: not "before merge". PR 5 is merged and never approved: false.
+    model: fct_pull_requests
+    given:
+      - input: ref('int_pr_lifecycle')
+        rows:
+          - {pr_number: 1, author_login: alice, is_merged: true, was_approved: true, merged_at: "2024-03-02 10:00:00", first_approved_at: "2024-03-02 10:00:00"}
+          - {pr_number: 2, author_login: alice, is_merged: true, was_approved: true, merged_at: "2024-03-02 10:00:00", first_approved_at: "2024-03-02 10:00:01"}
+          - {pr_number: 3, author_login: alice, is_merged: true, was_approved: true, merged_at: "2024-03-02 10:00:00", first_approved_at: "2024-03-01 09:00:00"}
+          - {pr_number: 4, author_login: alice, is_merged: false, was_approved: true, first_approved_at: "2024-03-01 09:00:00"}
+          - {pr_number: 5, author_login: alice, is_merged: true, was_approved: false, merged_at: "2024-03-02 10:00:00"}
+      - input: ref('stg_github__pull_requests')
+        rows:
+          - {pr_number: 1, _loaded_at: "2026-11-01 18:34:18"}
+    expect:
+      rows:
+        - {pr_number: 1, was_approved: true, was_approved_before_merge: true}
+        - {pr_number: 2, was_approved: true, was_approved_before_merge: false}
+        - {pr_number: 3, was_approved: true, was_approved_before_merge: true}
+        - {pr_number: 4, was_approved: true, was_approved_before_merge: false}
+        - {pr_number: 5, was_approved: false, was_approved_before_merge: false}

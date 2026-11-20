@@ -10,6 +10,8 @@ review_rollup as (
         pr_number,
         min(submitted_at) as first_reviewed_at,
         max(submitted_at) as last_reviewed_at,
+        -- when the first approval came (null if none); lets the fact table tell "approved before the merge" from "approved at any time"
+        min(submitted_at) filter (where review_state = 'APPROVED') as first_approved_at,
         count(*) as review_count,
         count(distinct reviewer_login) as distinct_reviewer_count,
         bool_or(review_state = 'APPROVED') as was_approved,
@@ -31,6 +33,7 @@ lifecycle as (
         pr.created_at as opened_at,
         rr.first_reviewed_at,
         rr.last_reviewed_at,
+        rr.first_approved_at,
         pr.merged_at,
         pr.closed_at,
 

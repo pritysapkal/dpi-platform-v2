@@ -137,7 +137,7 @@ flowchart LR
 This table has an **enforced dbt contract**: every column, its type and whether it may be null is declared in
 `models/marts/schema.yml`. If the model's SQL stops matching (a column added, dropped or retyped), or a row breaks
 the declared rules, the build fails instead of quietly producing a different table. `pr_number` is a real primary
-key in the database, and 14 columns are `NOT NULL`.
+key in the database, and 15 columns are `NOT NULL`.
 
 | Column | Type | Description |
 |---|---|---|
@@ -150,9 +150,10 @@ key in the database, and 14 columns are `NOT NULL`.
 | `is_bot` | boolean | True when the author login ends in `[bot]` (for example `dependabot[bot]`). |
 | `opened_at`, `first_reviewed_at`, `last_reviewed_at`, `merged_at`, `closed_at` | timestamp | When the PR was opened, first and last reviewed, merged and closed (UTC). Null when it did not happen. |
 | `review_count`, `distinct_reviewer_count` | bigint | Reviews on the PR, and how many different people left them. |
-| `was_approved`, `had_changes_requested` | boolean | At least one `APPROVED` / `CHANGES_REQUESTED` review. |
+| `was_approved`, `had_changes_requested` | boolean | At least one `APPROVED` / `CHANGES_REQUESTED` review, **at any time**. |
 | `was_reviewed` | boolean | At least one review, at any time. |
 | `was_reviewed_before_merge` | boolean | Merged, and the first review came at or before the merge. A comment left after the merge doesn't count. Basis of review coverage. |
+| `was_approved_before_merge` | boolean | Merged, and the first `APPROVED` review came at or before the merge (the same rule). False for PRs that were never merged, never approved, or approved only after the merge. The dashboard's funnel uses this for merged PRs; `was_approved` is the any-time version. |
 | `review_wait_hours` | double | Hours from opening to the first review. Null if never reviewed. |
 | `time_in_review_hours` | double | Hours from the first review to the merge. Null if not merged, or if the only review came after the merge. |
 | `lead_time_hours` | double | Hours from opening to merge. Null if not merged. **The lead-time metric is calculated from this column.** |
@@ -189,7 +190,7 @@ key in the database, and 14 columns are `NOT NULL`.
 
 ## dbt tests
 
-`dbt build` runs 8 models, **61 data tests** and **4 unit tests** (73 in all), in dependency
+`dbt build` runs 8 models, **63 data tests** and **6 unit tests** (77 in all), in dependency
 order. Every model's primary key gets `unique` and `not_null`; on top of that:
 
 | Model | Beyond the primary key |
@@ -197,7 +198,7 @@ order. Every model's primary key gets `unique` and `not_null`; on top of that:
 | `stg_github__pull_requests` | `not_null` on `_loaded_at`. |
 | `stg_github__pr_reviews` | `relationships` (every review belongs to a PR in the data), `accepted_values` on `review_state` (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`, `PENDING`), `not_null` on `_loaded_at`. |
 | `int_pr_lifecycle` | custom `non_negative` on `review_wait_hours` and `lead_time_hours`. |
-| `fct_pull_requests` | `accepted_values` on `pr_state` and `pr_lifecycle_stage`, `not_null` on the flags and on `data_as_of`, `non_negative` on `lead_time_hours`, and a `relationships` test that every `author_login` exists in `dim_contributors`. |
+| `fct_pull_requests` | `accepted_values` on `pr_state` and `pr_lifecycle_stage`, `not_null` on the flags and on `data_as_of`, a singular test that `was_approved_before_merge` is a stricter version of `was_approved` and `was_reviewed_before_merge`, `non_negative` on `lead_time_hours`, and a `relationships` test that every `author_login` exists in `dim_contributors`. |
 | `dim_contributors` | `not_null` on every column, `non_negative` on the three counts. |
 | `dim_date` | `accepted_values` on quarter, month and weekday, plus two singular tests: no gaps in the calendar, and every date a PR was opened or merged exists in it. |
 | `mart_dora_metrics_daily` | `non_negative` on `deployment_frequency`, plus a singular test that the mart's total merges equal the merged-PR count in `fct_pull_requests`. |

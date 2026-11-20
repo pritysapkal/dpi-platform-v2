@@ -45,3 +45,29 @@ unit_tests:
       rows:
         - {pr_number: 10, first_reviewed_at: "2024-05-01 13:00:00", last_reviewed_at: "2024-05-02 15:00:00", review_count: 3, distinct_reviewer_count: 2, was_approved: true, had_changes_requested: true, was_reviewed: true, review_wait_hours: 4.0, time_in_review_hours: 44.0, lead_time_hours: 48.0, pr_lifecycle_stage: merged}
         - {pr_number: 11, first_reviewed_at: null, last_reviewed_at: null, review_count: 0, distinct_reviewer_count: 0, was_approved: false, had_changes_requested: false, was_reviewed: false, review_wait_hours: null, time_in_review_hours: null, lead_time_hours: null, pr_lifecycle_stage: open}
+
+
+  - name: int_pr_lifecycle_first_approval_is_the_earliest_approved_review_only
+    description: >
+      first_approved_at is the time of the earliest APPROVED review, ignoring other kinds of review, whatever order the
+      rows arrive in. PR 20 has a comment first (09:00), then two approvals out of order (the 11:00 one first in the
+      list), so its first approval is 11:00 and not the comment's 09:00 or the later 15:00. PR 21 has only a comment and
+      PR 22 has no reviews: both have no first approval.
+    model: int_pr_lifecycle
+    given:
+      - input: ref('stg_github__pull_requests')
+        rows:
+          - {pr_number: 20, pr_state: closed, is_merged: true, author_login: carol, created_at: "2024-06-01 08:00:00", merged_at: "2024-06-03 08:00:00", closed_at: "2024-06-03 08:00:00"}
+          - {pr_number: 21, pr_state: open, is_merged: false, author_login: carol, created_at: "2024-06-01 08:00:00"}
+          - {pr_number: 22, pr_state: open, is_merged: false, author_login: carol, created_at: "2024-06-01 08:00:00"}
+      - input: ref('stg_github__pr_reviews')
+        rows:
+          - {pr_number: 20, review_id: 1, reviewer_login: bob, review_state: APPROVED, submitted_at: "2024-06-01 11:00:00"}
+          - {pr_number: 20, review_id: 2, reviewer_login: alice, review_state: APPROVED, submitted_at: "2024-06-02 15:00:00"}
+          - {pr_number: 20, review_id: 3, reviewer_login: alice, review_state: COMMENTED, submitted_at: "2024-06-01 09:00:00"}
+          - {pr_number: 21, review_id: 4, reviewer_login: bob, review_state: COMMENTED, submitted_at: "2024-06-01 10:00:00"}
+    expect:
+      rows:
+        - {pr_number: 20, first_approved_at: "2024-06-01 11:00:00", was_approved: true}
+        - {pr_number: 21, first_approved_at: null, was_approved: false}
+        - {pr_number: 22, first_approved_at: null, was_approved: false}

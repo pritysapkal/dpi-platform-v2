@@ -160,6 +160,14 @@ models:
         tests:
           - not_null
 
+      - name: was_approved_before_merge
+        data_type: boolean
+        description: True when the PR was merged and its first APPROVED review came at or before the merge. False for unmerged PRs, for merged PRs never approved, and for merged PRs approved only after the merge. Basis of the funnel's "approved" stage for merged PRs; was_approved is the any-time version.
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+
       - name: review_wait_hours
         data_type: double
         description: Hours from the PR opening to its first review. Null if it was never reviewed.
