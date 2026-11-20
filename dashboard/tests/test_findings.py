@@ -1,10 +1,14 @@
 """The README's "Key findings" must match the data.
 
-Runs every query in analyses/key_findings.sql against dev.duckdb and checks the results, then
-checks that the numbers written in the README's Key findings section are the ones the queries
-produce. If the data is refreshed and a finding changes, this fails until the README is updated.
+Runs every query in analyses/key_findings.sql and checks the results, then checks that the numbers written in the
+README's Key findings section are the ones the queries produce.
 
-Needs dev.duckdb. Run from the project root:  python -m pytest dashboard/tests/test_findings.py -v
+The findings are written about one particular pull of the data (2026-11-01), so the exact-number tests are marked
+frozen_data: they run on the saved copy of that pull (fixtures/frozen, loaded into frozen.duckdb), on every push, and
+fail loudly if pointed at any other data. Today's live data moves on; this copy never does. Run from the project root:
+    python fixtures/load_fixture.py frozen.duckdb frozen
+    DPIP_DB_PATH=frozen.duckdb dbt build --profiles-dir profiles
+    DPIP_DB_PATH=frozen.duckdb python -m pytest dashboard/tests/test_findings.py -m "frozen_data or no_db or any_data"
 """
 
 import datetime
@@ -14,8 +18,6 @@ from pathlib import Path
 import pytest
 
 import queries
-
-pytestmark = pytest.mark.skipif(not queries.DB_PATH.exists(), reason="dev.duckdb not built")
 
 PROJECT = queries.PROJECT_DIR
 SQL_FILE = PROJECT / "analyses" / "key_findings.sql"
@@ -47,17 +49,20 @@ EXPECTED_BLOCKS = {
 }
 
 
+@pytest.mark.any_data
 def test_every_block_runs_and_returns_rows(r):
     assert set(r) == EXPECTED_BLOCKS  # nothing dropped, renamed or left untested
     assert all(rows for rows in r.values())
 
 
+@pytest.mark.frozen_data
 def test_scope(r):
     assert r["data_window"] == [
         (datetime.date(2023, 1, 1), datetime.date(2026, 10, 1), datetime.date(2026, 2, 23), datetime.date(2026, 11, 1))
     ]
 
 
+@pytest.mark.frozen_data
 def test_finding_1_throughput_and_backlog(r):
     assert r["f1_throughput_by_year"] == [(2023, 123, 88, 29.4), (2024, 159, 92, 23.2), (2025, 108, 26, 22.8), (2026, 29, 1, 23.4)]
     assert r["f1_outcome_of_prs_by_year_opened"] == [
@@ -68,16 +73,19 @@ def test_finding_1_throughput_and_backlog(r):
     assert r["f1_backlog"] == [(73, 45, 39, 372.0)]
 
 
+@pytest.mark.frozen_data
 def test_finding_2_review_coverage(r):
     assert r["f2_review_coverage_by_year"] == [(2023, 88, 88, 100.0), (2024, 92, 76, 82.6), (2025, 26, 18, 69.2), (2026, 1, 1, 100.0)]
     assert r["f2_unreviewed_merges_by_author"] == [(24, 22, 3)]
 
 
+@pytest.mark.frozen_data
 def test_finding_3_waiting_for_the_first_review(r):
     assert r["f3_wait_vs_review"] == [(183, 6.88, 0.56, 55.9, 60.7, 86.9, 54.6)]
     assert r["f3_wait_by_year"] == [(2023, 88, 3.6, 50.0), (2024, 76, 7.3, 43.5), (2025, 18, 191.8, 87.7), (2026, 1, 23.4, 100.0)]
 
 
+@pytest.mark.frozen_data
 def test_finding_4_lead_time_shape_and_bots(r):
     assert r["f4_lead_time_shape"] == [(288, 20.62, 235.64, 483.04, 52.4, 81.3, 23, 77.8)]
     assert r["f4_old_dashboard_figure"] == [(260.78,)]
@@ -87,6 +95,7 @@ def test_finding_4_lead_time_shape_and_bots(r):
     assert round(100 * 81 / 288) == 28
 
 
+@pytest.mark.frozen_data
 def test_finding_5_review_concentration(r):
     assert r["f5_review_concentration"] == [(335, 61, 158, 246, 291, 330, 136)]
     assert [round(100 * n / 335, 1) for n in (158, 246, 291)] == [47.2, 73.4, 86.9]
@@ -121,14 +130,17 @@ README_NUMBERS = [
 ]
 
 
+@pytest.mark.no_db
 @pytest.mark.parametrize("quoted", README_NUMBERS)
 def test_readme_quotes_this_number(quoted):
     squashed = " ".join(findings_text().split())  # undo the line wrapping
     assert quoted in squashed
 
 
+@pytest.mark.frozen_data
 def test_readme_findings_do_not_name_individuals():
-    # the findings describe a repo's process; real people's logins stay out of the claims
+    # the findings describe a repo's process; real people's logins stay out of the claims. The logins come from the
+    # data the README describes, so this runs on the frozen copy of that pull.
     names = set(queries.top_authors(datetime.date(2023, 1, 1), datetime.date(2026, 11, 1), limit=300)["author"])
     names |= set(queries.top_reviewers(datetime.date(2023, 1, 1), datetime.date(2026, 11, 1), limit=300)["reviewers"]["reviewer"])
     text = findings_text()
