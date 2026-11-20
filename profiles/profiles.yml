@@ -1,0 +1,10 @@
+# dbt connection for automated runs and for building the test datasets. Use it with:  dbt build --profiles-dir profiles
+# DPIP_DB_PATH picks the database file (dev.duckdb when it is not set), the same variable the dashboard, the agent and the
+# tests read - so one setting points every part of the project at the same file.
+dpi_project:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DPIP_DB_PATH', 'dev.duckdb') }}"
+      threads: 1

@@ -208,7 +208,7 @@ def test_the_loader_refuses_a_database_with_real_data_and_leaves_it_alone(tmp_pa
     con.execute("create schema raw")
     con.execute("create table raw.github_pull_requests as select 1 as number, 'real' as title, timestamp '2026-11-01 18:34:18' as _loaded_at")
     con.close()
-    with pytest.raises(load_fixture.RefusingToOverwrite, match="not fixture data"):
+    with pytest.raises(load_fixture.RefusingToOverwrite, match="not this dataset"):
         load_fixture.load(db)
     con = duckdb.connect(str(db), read_only=True)
     assert con.execute("select title from raw.github_pull_requests").fetchall() == [("real",)]  # untouched

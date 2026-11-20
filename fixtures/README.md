@@ -20,6 +20,20 @@ python fixtures/build_fixture.py --facts    # print the expected answers
 The loader has no default path and **refuses to touch a database that holds real data**: it replaces the two raw tables,
 so it only works on a new file or on a file that already contains just this fixture.
 
+## The second dataset: the real pull, frozen
+
+`frozen/` holds the real raw tables from the pull of **2026-11-01 18:34 UTC** (523 PRs, 835 reviews of `encode/httpx`, all
+public GitHub data), saved by `freeze_real_data.py`. The README's key findings are checked against exactly this copy, so
+they stay true however the live data moves on. The files are pinned by hash and must only change on purpose.
+
+```
+python fixtures/load_fixture.py frozen.duckdb frozen      # fixture.duckdb ... fixture   (the default)
+DPIP_DB_PATH=frozen.duckdb dbt build --profiles-dir profiles
+```
+
+`profiles/profiles.yml` is a dbt profile whose database file comes from `DPIP_DB_PATH` (`dev.duckdb` when unset). The same
+variable points the dashboard, the agent and the tests at that file. The loader will not replace one dataset with the other.
+
 ## Why CSV files written by a script, and not dbt seeds
 
 dbt seeds load into the project's own schema and guess each column's type from the file, so the dates would become
