@@ -13,12 +13,14 @@ Two environment variables:
 
 import datetime
 import os
+import sys
 from pathlib import Path
 
 import duckdb
 import pytest
 
 PROJECT = Path(__file__).resolve().parent
+sys.path.insert(0, str(PROJECT / "fixtures"))  # tests import build_fixture for the answer key (facts, period_facts)
 
 # The load time of each known dataset (the data_as_of every fact row carries); anything else is "live".
 KNOWN_DATASETS = {

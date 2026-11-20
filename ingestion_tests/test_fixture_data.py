@@ -233,3 +233,21 @@ def test_the_command_line_loads_into_a_new_file(tmp_path):
     db = tmp_path / "cli.duckdb"
     result = subprocess.run([sys.executable, "-B", str(FIXTURES / "load_fixture.py"), str(db)], capture_output=True, text=True)
     assert result.returncode == 0 and "loaded 50 PRs and 36 reviews" in result.stdout
+
+
+# ---------- period_facts(): the answer key for date windows ----------
+
+def test_period_facts_over_everything_equals_facts():
+    f, p = fx.facts(), fx.period_facts("2000-01-01", "2100-01-01")
+    assert (p["merged"], p["median"], p["p90"], p["mean"]) == (f["merged"], f["median_lead_time_hours"], f["p90_lead_time_hours"], f["mean_lead_time_hours"])
+    h = fx.period_facts("2000-01-01", "2100-01-01", humans_only=True)
+    assert (h["merged"], h["median"], h["p90"]) == (f["human_merged"], f["human_median_lead_time_hours"], f["human_p90_lead_time_hours"])
+    assert p["bot_merged"] == h["bot_merged"] == f["bot_merged"]
+
+
+def test_period_facts_years_add_up_and_edges_are_inclusive():
+    f = fx.facts()
+    assert [fx.period_facts(f"{y}-01-01", f"{y}-12-31")["merged"] for y in (2023, 2024, 2025)] == [f["merged_by_year"][y] for y in (2023, 2024, 2025)]
+    assert fx.period_facts("2024-11-18", "2024-11-18")["merged"] == 2  # two merges on that one day: both ends of a range count
+    assert fx.period_facts("2024-09-01", "2024-09-30")["merged"] == 0 and fx.period_facts("2024-09-01", "2024-09-30")["median"] is None
+    assert fx.period_facts("2024-08-01", "2024-08-31", humans_only=True)["merged"] == 0 < fx.period_facts("2024-08-01", "2024-08-31")["merged"]  # bot-only month

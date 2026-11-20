@@ -302,6 +302,23 @@ def facts() -> dict:
     }
 
 
+def period_facts(start: str, end: str, humans_only: bool = False) -> dict:
+    """The same kind of answers as facts(), for the PRs merged between two dates (inclusive, "YYYY-MM-DD"), in plain Python.
+
+    Lead time is not rounded here; the pipeline rounds each PR's lead time to 2 decimals, so compare with a tolerance of 0.01.
+    """
+    merged = [p for p in CASES if p.merged and start <= p.merged[:10] <= end]
+    counted = [p for p in merged if not (humans_only and is_bot(p.author))]
+    leads = [(_t(p.merged) - _t(p.created)).total_seconds() / 3600 for p in counted]
+    return {
+        "merged": len(counted),
+        "bot_merged": sum(1 for p in merged if is_bot(p.author)),  # bots in the window, whatever the filter
+        "median": statistics.median(leads) if leads else None,
+        "p90": _percentile(leads, 0.9) if leads else None,
+        "mean": statistics.fmean(leads) if leads else None,
+    }
+
+
 REQUIRED_TAGS = {
     "window_start_day", "normal_reviewed_merge", "multi_review", "slow_merge_week", "bot_merged_no_review",
     "bot_closed_unmerged", "bot_reviewer", "bot_only_month", "lookalike_human_login",
