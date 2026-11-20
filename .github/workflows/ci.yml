@@ -6,8 +6,7 @@ on:
   pull_request:
     branches: [main]
 
-# A newer run on the same branch/PR cancels the older one, so frequent pushes
-# don't stack up live GitHub fetches and burn through the API rate limit.
+# A newer run on the same branch/PR cancels the older one.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -16,14 +15,23 @@ concurrency:
 permissions:
   contents: read
 
+# What this workflow does, in one paragraph: it never touches GitHub's API or any secret. It builds the warehouse
+# twice from files in the repository, with the same dbt project that runs in production:
+#   1. from the 50-PR test fixture (fixtures/), then runs every test except the README-finding tests;
+#   2. from the frozen copy of the real 2026-11-01 pull (fixtures/frozen/), then runs only the README-finding tests.
+# Both pytest runs set DPIP_FAIL_ON_SKIP=1, so a skipped test is a failed test: a green run means every selected test
+# really ran. Which tests each run selects is written once, in workflow_selections.py. The daily live-data run is a
+# different workflow.
 jobs:
-  # Tests of the Python code that need no database and no secrets: the GitHub fetcher (with fake HTTP
-  # responses), the agent (with a scripted fake model), the dashboard's date and chart helpers. No
-  # dev.duckdb exists here, so the tests that read the real data skip themselves ("dev.duckdb not built",
-  # visible in the -rs report). Those run on the data-backed schedule instead, once the CI split lands.
-  python-tests:
-    name: Python tests (no database)
+  fixture-backed-tests:
+    name: Build on fixture data, run the tests
     runs-on: ubuntu-latest
+
+    env:
+      # dbt, mf and the tests all read the database file named here, and the dbt profile lives in the repository.
+      DBT_PROFILES_DIR: profiles
+      DPIP_FAIL_ON_SKIP: "1"
+      PYTHONIOENCODING: utf-8
 
     steps:
       - name: Checkout repo
@@ -37,57 +45,48 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             agent/requirements.txt
+            dashboard/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt -r agent/requirements.txt
+        run: pip install -r requirements.txt -r agent/requirements.txt -r dashboard/requirements.txt
 
-      - name: pytest (ingestion, agent, dashboard helpers)
-        run: python -m pytest ingestion_tests agent/tests dashboard/tests -q -rs
+      # ---- 1. the 50-PR fixture: code logic, with answers worked out by hand ----
 
-  dbt-build-and-test:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Configure dbt profile
-        run: |
-          mkdir -p ~/.dbt
-          cat > ~/.dbt/profiles.yml << 'EOF'
-          dpi_project:
-            outputs:
-              dev:
-                type: duckdb
-                path: dev.duckdb
-                threads: 4
-            target: dev
-          EOF
-          # `dbt` finds ~/.dbt on its own, but the `mf` command line does not (it fails with "Could not find
-          # profile"), so tell every later step where the profile lives.
-          echo "DBT_PROFILES_DIR=$HOME/.dbt" >> "$GITHUB_ENV"
-
-      - name: Fetch latest PR + review data from GitHub
+      - name: Load the fixture into fixture.duckdb
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: python fetch_prs.py
+          DPIP_DB_PATH: fixture.duckdb
+        run: python fixtures/load_fixture.py fixture.duckdb fixture
 
-      # `dbt build` runs every model and every test, in dependency order,
-      # against the data just fetched above — this is the real pass/fail gate.
-      - name: dbt build (models + tests)
+      # `dbt build` runs every model, data test and unit test in dependency order: the real pass/fail gate.
+      - name: dbt build on the fixture
+        env:
+          DPIP_DB_PATH: fixture.duckdb
         run: dbt build
 
-      # Checks the MetricFlow definitions against the tables `dbt build` just created, so a broken
-      # metric, dimension or measure fails here and not when someone runs `mf query`.
+      # Checks the MetricFlow definitions against the tables `dbt build` just created.
       - name: Validate the semantic layer (mf validate-configs)
         env:
-          PYTHONIOENCODING: utf-8  # the CLI prints a progress spinner; this keeps it from tripping on a narrow console encoding
+          DPIP_DB_PATH: fixture.duckdb
         run: mf validate-configs
+
+      - name: pytest on the fixture (everything except the README findings)
+        env:
+          DPIP_DB_PATH: fixture.duckdb
+        run: python -m pytest ingestion_tests agent/tests dashboard/tests -q -rs -m "$(python workflow_selections.py push-fixture)"
+
+      # ---- 2. the frozen real pull: the README's key findings ----
+
+      - name: Load the frozen real data into frozen.duckdb
+        env:
+          DPIP_DB_PATH: frozen.duckdb
+        run: python fixtures/load_fixture.py frozen.duckdb frozen
+
+      - name: dbt build on the frozen data
+        env:
+          DPIP_DB_PATH: frozen.duckdb
+        run: dbt build
+
+      - name: pytest on the frozen data (README key findings)
+        env:
+          DPIP_DB_PATH: frozen.duckdb
+        run: python -m pytest ingestion_tests agent/tests dashboard/tests -q -rs -m "$(python workflow_selections.py push-frozen)"
