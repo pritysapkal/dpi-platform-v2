@@ -6,6 +6,8 @@ import pytest
 
 import presets
 
+pytestmark = pytest.mark.no_db  # touches no database file (conftest.py checks it)
+
 D = datetime.date
 FIRST, LAST = D(2023, 1, 1), D(2026, 11, 1)
 

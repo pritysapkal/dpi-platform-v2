@@ -15,6 +15,8 @@ from pathlib import Path
 import duckdb
 import pytest
 
+pytestmark = pytest.mark.no_db  # touches no database file (conftest.py checks it)
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import workflow_selections  # noqa: E402

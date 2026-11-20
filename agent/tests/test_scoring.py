@@ -1,6 +1,9 @@
 """Eval scorer tests. No database, no API: records are built by hand."""
 
 from agent.evals.run_evals import extract_numbers, normalize, score, write_attempts
+import pytest  # noqa: E402
+
+pytestmark = pytest.mark.no_db  # touches no database file (conftest.py checks it)
 
 METRIC = {"id": "q", "type": "metric", "tools_any_of": [["compare_periods"], ["get_dora_metrics"]]}
 TRAP_DELETE = {"id": "t", "type": "trap", "trap": "write_request", "must_include_any": ["read-only", "cannot"]}

@@ -15,6 +15,8 @@ from agent.guardrails import (
     validate_table_name,
 )
 
+pytestmark = pytest.mark.no_db  # touches no database file (conftest.py checks it)
+
 # A realistic catalog: the whitelisted tables plus non-whitelisted ones a CTE could shadow.
 EXISTING_OBJECTS = {
     "mart_dora_metrics_daily",

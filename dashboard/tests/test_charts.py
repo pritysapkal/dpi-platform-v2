@@ -7,6 +7,8 @@ import pytest
 
 import charts
 
+pytestmark = pytest.mark.no_db  # touches no database file (conftest.py checks it)
+
 
 def spec(chart) -> dict:
     return json.loads(chart.to_json())

@@ -8,6 +8,8 @@ import pytest
 
 from agent import config
 
+pytestmark = pytest.mark.no_db  # touches no database file (conftest.py checks it)
+
 PROJECT = config.PROJECT_DIR
 EXPECTED_DEFAULT = "gemini-3.5-flash-lite"
 

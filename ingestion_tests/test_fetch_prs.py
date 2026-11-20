@@ -10,6 +10,8 @@ import pytest
 import fetch_prs
 from fetch_prs import GitHubFetchError, get_with_retry
 
+pytestmark = pytest.mark.no_db  # touches no database file (conftest.py checks it)
+
 URL = "https://api.github.com/repos/encode/httpx/pulls"
 NOW = 1_000_000.0
 

@@ -13,6 +13,8 @@ from google.genai import errors, types
 from agent import agent, db, llm, tools
 from agent.agent import AgentResult, Tracer, run_agent, wrap_as_data
 
+pytestmark = pytest.mark.no_db  # touches no database file (conftest.py checks it)
+
 
 # ---------- fakes ----------
 

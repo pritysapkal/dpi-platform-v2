@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.no_db  # touches no database file (conftest.py checks it)
+
 PROJECT = Path(__file__).resolve().parents[2]
 SNIPPETS = {
     "dashboard": "import sys; sys.path.insert(0, 'dashboard'); import queries; print(queries.DB_PATH)",

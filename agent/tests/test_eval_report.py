@@ -6,6 +6,8 @@ import pytest
 
 from agent.evals import run_evals
 
+pytestmark = pytest.mark.no_db  # touches no database file (conftest.py checks it)
+
 UNAVAILABLE = "not evaluated — model unavailable (503/504) on 2026-11-18"
 ITEMS = [{"id": "q01", "type": "metric", "question": "How many PRs?", "tools_any_of": [["get_dora_metrics"]],
           "numbers": [{"label": "n", "sql": "select 1", "tolerance": 0}]}]

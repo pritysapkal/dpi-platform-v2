@@ -7,6 +7,8 @@ import pytest
 
 from agent.periods import parse_period, periods_in_question, resolve_period
 
+pytestmark = pytest.mark.no_db  # touches no database file (conftest.py checks it)
+
 TODAY = datetime.date(2026, 10, 6)  # a Tuesday, in Q4 2026
 COVERAGE = {"min": "2023-02-06", "max": "2026-02-23"}
 

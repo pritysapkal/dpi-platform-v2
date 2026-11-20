@@ -14,6 +14,8 @@ from pathlib import Path
 import duckdb
 import pytest
 
+pytestmark = pytest.mark.no_db  # touches no database file (conftest.py checks it)
+
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 sys.path.insert(0, str(FIXTURES))
 
