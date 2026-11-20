@@ -171,12 +171,16 @@ def lead_time_breakdown(start: datetime.date, end: datetime.date) -> dict:
 def review_funnel(start: datetime.date, end: datetime.date, include_bots: bool) -> dict:
     """What happened to the PRs opened in [start, end]: opened -> reviewed -> approved -> merged.
 
-    "Reviewed" means it got a review while it was still open: any review for a PR that was not
-    merged, a review before the merge for one that was. "Approved" means at least one APPROVED
-    review (no PR in the data was approved only after merging). Merged PRs are not all
-    approved, so the stages are counts, not a strict funnel: merged_without_approval says how
-    many merged PRs skipped a stage, and merged_without_review how many of those had no review.
-    PRs still open at the data's pull date are counted in opened but cannot have merged yet.
+    Both middle stages mean the same thing: done while the PR could still be changed. For a PR that was not merged that
+    is any review / any approval; for a merged PR it is a review / an approval at or before the merge
+    (was_reviewed_before_merge, was_approved_before_merge). A comment or approval that arrives after the merge reviews
+    nothing, so it is not counted. Because an approval is also a review, a merged PR approved before the merge was
+    reviewed before the merge, so merged_without_review <= merged_without_approval always holds.
+
+    The stages are counts, not a strict funnel: merged PRs need not have been approved.
+    merged_without_approval is the merged PRs with no approval before the merge, and merged_without_review the ones
+    among them that also had no review before the merge. PRs still open at the data's pull date are counted in
+    opened but cannot have merged yet.
     """
     (opened, reviewed, approved, merged, merged_no_review, merged_no_approval,
      closed_unmerged, still_open), = run(
@@ -184,10 +188,10 @@ def review_funnel(start: datetime.date, end: datetime.date, include_bots: bool) 
         select
             count(*),
             count(*) filter (where was_reviewed and (not is_merged or was_reviewed_before_merge)),
-            count(*) filter (where was_approved),
+            count(*) filter (where was_approved and (not is_merged or was_approved_before_merge)),
             count(*) filter (where is_merged),
             count(*) filter (where is_merged and not was_reviewed_before_merge),
-            count(*) filter (where is_merged and not was_approved),
+            count(*) filter (where is_merged and not was_approved_before_merge),
             count(*) filter (where pr_lifecycle_stage = 'closed_without_merge'),
             count(*) filter (where pr_lifecycle_stage = 'open')
         from main.fct_pull_requests

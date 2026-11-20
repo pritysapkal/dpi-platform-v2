@@ -305,7 +305,8 @@ are necessarily thinner.
 - **Trends:** PRs merged, median lead time and p90 lead time per week or month.
 - **Where the time goes:** waiting for a first review versus time in review, for human PRs.
 - **Review funnel:** opened, reviewed, approved, merged, with a note that it isn't a
-  strictly nested funnel (some PRs merge with no review).
+  strictly nested funnel (some PRs merge with no review). "Reviewed" and "approved" both mean
+  before the merge for a merged PR (`was_reviewed_before_merge`, `was_approved_before_merge`).
 - **Open PRs:** how long they have been waiting, measured to `data_as_of`, not today.
 - **Who reviews and who writes:** top reviewers (by distinct PRs of others reviewed) and
   top authors, people only.

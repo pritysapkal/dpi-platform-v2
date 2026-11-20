@@ -305,9 +305,10 @@ else:
         st.caption(
             f"Of the {f['opened']:,} PRs: {f['merged']:,} merged, {f['closed_without_merge']:,} closed without "
             f"merging, {f['still_open']:,} still open when the data was pulled. "
-            "Reviewed means a review while the PR was still open. This is a count at each stage, not a strict "
-            f"funnel: {f['merged_without_approval']:,} merged PRs were never approved, and "
-            f"{f['merged_without_review']:,} of those had no review before they were merged."
+            "Reviewed and approved mean while the PR could still be changed: for a merged PR, at or before the merge "
+            "(a review or approval that arrives after the merge is not counted). This is a count at each stage, not a "
+            f"strict funnel: {f['merged_without_approval']:,} merged PRs were not approved before they were merged, and "
+            f"{f['merged_without_review']:,} of those had no review before the merge either."
         )
 
 st.divider()

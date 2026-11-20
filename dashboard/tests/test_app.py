@@ -195,7 +195,7 @@ def test_funnel_with_no_opened_prs_shows_a_message_not_an_error():
 
 def test_funnel_caption_is_honest_that_it_is_not_a_strict_funnel():
     text = " ".join(c.value for c in run_app().caption)
-    assert "never approved" in text and "still open when the data was pulled" in text
+    assert "not approved before they were merged" in text and "still open when the data was pulled" in text
 
 
 # ---------- open PRs ----------
