@@ -17,7 +17,7 @@ import queries
 
 pytestmark = pytest.mark.skipif(not queries.DB_PATH.exists(), reason="dev.duckdb not built")
 
-PROJECT = queries.DB_PATH.parent
+PROJECT = queries.PROJECT_DIR
 SQL_FILE = PROJECT / "analyses" / "key_findings.sql"
 README = PROJECT / "README.md"
 

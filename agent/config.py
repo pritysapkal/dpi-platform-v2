@@ -12,7 +12,7 @@ PROJECT_DIR = AGENT_DIR.parent
 load_dotenv(AGENT_DIR / ".env")
 
 # Same database the dbt pipeline and the dashboard use.
-DB_PATH = Path(os.environ.get("DPIP_DB_PATH", PROJECT_DIR / "dev.duckdb"))
+DB_PATH = Path(os.environ.get("DPIP_DB_PATH") or PROJECT_DIR / "dev.duckdb")
 
 # Not read at import time as a hard requirement, so tests can run without a key.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")

@@ -13,11 +13,15 @@ Which date the range applies to depends on the question:
 """
 
 import datetime
+import os
 from pathlib import Path
 
 import duckdb
 
-DB_PATH = Path(__file__).resolve().parent.parent / "dev.duckdb"
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+# DPIP_DB_PATH points the dashboard at another database file (the test fixture, the frozen copy of the real data);
+# unset, it reads dev.duckdb exactly as before. The agent honours the same variable.
+DB_PATH = Path(os.environ.get("DPIP_DB_PATH") or PROJECT_DIR / "dev.duckdb")
 
 
 def run(sql: str, params: list | None = None) -> list[tuple]:

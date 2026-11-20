@@ -10,7 +10,7 @@ import queries
 
 pytestmark = pytest.mark.skipif(not queries.DB_PATH.exists(), reason="dev.duckdb not built")
 
-APP = str(queries.DB_PATH.parent / "dashboard" / "app.py")
+APP = str(queries.PROJECT_DIR / "dashboard" / "app.py")
 Y2024 = (datetime.date(2024, 1, 1), datetime.date(2024, 12, 31))
 NO_MERGES = (datetime.date(2025, 12, 1), datetime.date(2025, 12, 3))  # humans: nothing at all; with bots: 1 bot PR opened
 REVIEWS_ONLY = (datetime.date(2026, 3, 30), datetime.date(2026, 9, 30))  # 12 reviews, but no PR opened or merged
