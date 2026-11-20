@@ -54,7 +54,8 @@ Each case is a pull request on purpose. The tag is also in the case table, and a
 | `many_reviews_one_reviewer` | 1025 | one person leaves five reviews on a single PR, so ranking reviewers by reviews and by PRs reviewed gives different orders |
 | `slow_merge_week` | 1007, 1025, 1028, 1042 | took a week to merge, so the lead-time tail is not empty |
 | `bot_merged_no_review` | 1002, 1006, 1017, 1019, 1022, 1026, 1030, 1032, 1033, 1037, 1041, 1048 | a dependabot PR merged within hours, never reviewed |
-| `bot_closed_unmerged` | 1013, 1046 | a bot PR closed without merging |
+| `bot_closed_unmerged` | 1013 | a bot PR closed without merging |
+| `open_bot_pr` | 1046 | a bot PR that is still open and never reviewed, so the bot checkbox changes the open-PR figures |
 | `bot_reviewer` | 1035 | the first review comes from a bot (`copilot-pull-request-reviewer[bot]`) |
 | `bot_only_month` | 1032, 1033 | a month (August 2024) in which only bots merge anything |
 | `lookalike_human_login` | 1015 | `robot-dev` contains "bot" but is a person, so `is_bot` must be false |
@@ -92,14 +93,14 @@ reproduces every one of them, and that this table matches.
 | PRs | 50 |
 | reviews | 40 |
 | merged | 39 |
-| closed without merge | 6 |
-| still open | 5 |
+| closed without merge | 5 |
+| still open | 6 |
 | bot-authored PRs | 14 |
 | merged by bots | 12 |
 | merged by people | 27 |
 | people's merges reviewed before the merge | 22 |
 | people's merges not reviewed before the merge | 5 |
-| open PRs never reviewed | 2 |
+| open PRs never reviewed | 3 |
 | people who authored a PR | 11 |
 | people who reviewed | 8 |
 | distinct logins (people and bots) | 14 |

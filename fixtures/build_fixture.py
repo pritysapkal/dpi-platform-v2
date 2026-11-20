@@ -197,8 +197,8 @@ CASES = [
        tags=("normal_reviewed_merge",)),
     PR(1045, "Fix a flaky test", "alice", "2025-06-02T10:00:00Z", merged="2025-06-02T11:00:00Z",
        tags=("human_merged_no_review",)),
-    PR(1046, "Bump typing-extensions from 4.9.0 to 4.10.0", "dependabot[bot]", "2025-07-07T08:00:00Z", closed="2025-07-14T08:00:00Z",
-       tags=("bot_closed_unmerged",)),
+    PR(1046, "Bump typing-extensions from 4.9.0 to 4.10.0", "dependabot[bot]", "2025-07-07T08:00:00Z",
+       tags=("open_bot_pr",)),  # dependabot's PR nobody has dealt with: still open, never reviewed
     PR(1047, "Expose the response elapsed time", "frank", "2025-09-01T10:00:00Z", merged="2025-09-03T10:00:00Z",
        reviews=(r(5032, "heidi", "APPROVED", "2025-09-02T10:00:00Z"),),
        tags=("normal_reviewed_merge",)),
@@ -324,7 +324,7 @@ def period_facts(start: str, end: str, humans_only: bool = False) -> dict:
 
 REQUIRED_TAGS = {
     "window_start_day", "normal_reviewed_merge", "multi_review", "many_reviews_one_reviewer", "slow_merge_week", "bot_merged_no_review",
-    "bot_closed_unmerged", "bot_reviewer", "bot_only_month", "lookalike_human_login",
+    "bot_closed_unmerged", "open_bot_pr", "bot_reviewer", "bot_only_month", "lookalike_human_login",
     "human_merged_no_review", "only_post_merge_review", "review_at_merge_instant", "review_one_second_after_merge",
     "changes_requested_then_approved", "out_of_order_review_ids", "self_comment",
     "human_closed_unmerged_reviewed", "human_closed_unmerged_unreviewed",
@@ -343,6 +343,7 @@ TAG_MEANING = {
     "slow_merge_week": "took a week to merge, so the lead-time tail is not empty",
     "bot_merged_no_review": "a dependabot PR merged within hours, never reviewed",
     "bot_closed_unmerged": "a bot PR closed without merging",
+    "open_bot_pr": "a bot PR that is still open and never reviewed, so the bot checkbox changes the open-PR figures",
     "bot_reviewer": "the first review comes from a bot (`copilot-pull-request-reviewer[bot]`)",
     "bot_only_month": "a month (August 2024) in which only bots merge anything",
     "lookalike_human_login": "`robot-dev` contains \"bot\" but is a person, so `is_bot` must be false",

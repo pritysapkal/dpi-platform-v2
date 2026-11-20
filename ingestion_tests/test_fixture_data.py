@@ -112,6 +112,8 @@ def test_the_tags_say_what_is_true():
         if "many_reviews_one_reviewer" in p.tags:
             counts = {who: sum(1 for x in p.reviews if x[1] == who) for who in {x[1] for x in p.reviews}}
             assert max(counts.values()) == 5  # five reviews by one person on this one PR
+        if "open_bot_pr" in p.tags:
+            assert fx.is_bot(p.author) and p.state == "open" and not p.reviews
         if "bot_reviewer" in p.tags:
             assert any(fx.is_bot(x[1]) for x in p.reviews)
     assert by_number[1009].reviews[0][3] == by_number[1009].merged
@@ -184,7 +186,7 @@ def test_the_loader_creates_the_raw_tables_with_the_production_types(tmp_path):
     for table, expected in EXPECTED_TYPES.items():
         assert [tuple(r) for r in types_of(con, table)] == expected  # dates stay text, as fetch_prs.py leaves them
     assert con.execute("select count(*) from raw.github_pull_requests where merged_at = '' or closed_at = ''").fetchone()[0] == 0  # blanks became NULL
-    assert con.execute("select count(*) from raw.github_pull_requests where state = 'open' and closed_at is null").fetchone()[0] == 5
+    assert con.execute("select count(*) from raw.github_pull_requests where state = 'open' and closed_at is null").fetchone()[0] == 6
     assert con.execute("select max(_loaded_at) from raw.github_pull_requests").fetchone()[0] == datetime.datetime(2026, 1, 15, 12, 0, 0)
     assert con.execute("select count(*) from raw.github_pull_requests where title like '%\"unclosed\" client, again'").fetchone()[0] == 1  # quotes and commas survive
 

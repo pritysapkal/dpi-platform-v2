@@ -15,101 +15,14 @@ import pytest
 
 import build_fixture as fx  # the answer key; put on the path by conftest.py
 import queries
+from answer_key import (  # the case table worked out in plain Python (dashboard/tests/answer_key.py)
+    activity_expected, approved_before_merge, at, breakdown_expected, first_approval, funnel_expected, people,
+    reviewed_before_merge, reviewers_expected,
+)
 
 FULL = (datetime.date(2023, 1, 1), datetime.date(2026, 11, 1))  # wider than any dataset we hold
 Y2024 = (datetime.date(2024, 1, 1), datetime.date(2024, 12, 31))
 Y2023 = (datetime.date(2023, 1, 1), datetime.date(2023, 12, 31))
-
-
-# ---------- the case table, in plain Python (no SQL, no dbt): the answer key for the fixture ----------
-
-def at(stamp):
-    return fx._t(stamp)
-
-
-def first_review(pr):
-    return min((at(x[3]) for x in pr.reviews), default=None)
-
-
-def first_approval(pr):
-    return min((at(x[3]) for x in pr.reviews if x[2] == "APPROVED"), default=None)
-
-
-def reviewed_before_merge(pr):
-    return bool(pr.merged) and first_review(pr) is not None and first_review(pr) <= at(pr.merged)
-
-
-def approved_before_merge(pr):
-    return bool(pr.merged) and first_approval(pr) is not None and first_approval(pr) <= at(pr.merged)
-
-
-def people(include_bots):
-    return [p for p in fx.CASES if include_bots or not fx.is_bot(p.author)]
-
-
-def funnel_expected(include_bots):
-    """review_funnel() for the full range: "reviewed" and "approved" mean before the merge for a merged PR."""
-    prs = people(include_bots)
-    return {
-        "opened": len(prs),
-        "reviewed": sum(1 for p in prs if p.reviews and (not p.merged or reviewed_before_merge(p))),
-        "approved": sum(1 for p in prs if first_approval(p) and (not p.merged or approved_before_merge(p))),
-        "merged": sum(1 for p in prs if p.merged),
-        "merged_without_review": sum(1 for p in prs if p.merged and not reviewed_before_merge(p)),
-        "merged_without_approval": sum(1 for p in prs if p.merged and not approved_before_merge(p)),
-        "closed_without_merge": sum(1 for p in prs if p.closed),
-        "still_open": sum(1 for p in prs if p.state == "open"),
-    }
-
-
-def breakdown_expected():
-    """Human PRs merged and reviewed before the merge: hours waiting for the first review, hours in review."""
-    split = [p for p in fx.CASES if p.merged and not fx.is_bot(p.author) and reviewed_before_merge(p)]
-    wait = [(first_review(p) - at(p.created)).total_seconds() / 3600 for p in split]
-    review = [(at(p.merged) - first_review(p)).total_seconds() / 3600 for p in split]
-    humans_merged = sum(1 for p in fx.CASES if p.merged and not fx.is_bot(p.author))
-    return {
-        "split": len(split), "not_split": humans_merged - len(split),
-        "median_wait": statistics.median(wait), "median_review": statistics.median(review),
-        "wait_share": 100.0 * sum(wait) / (sum(wait) + sum(review)),
-    }
-
-
-def reviewers_expected(start, end):
-    """(reviewer, PRs reviewed, reviews, approvals) for people, not counting comments on their own PR; plus those comments."""
-    seen, reviews, approvals, own = {}, {}, {}, 0
-    for p in fx.CASES:
-        for _, who, state, stamp in p.reviews:
-            if fx.is_bot(who) or not start <= at(stamp).date() <= end:
-                continue
-            if who == p.author:
-                own += 1
-                continue
-            seen.setdefault(who, set()).add(p.number)
-            reviews[who] = reviews.get(who, 0) + 1
-            approvals[who] = approvals.get(who, 0) + (state == "APPROVED")
-    rows = sorted(((who, len(seen[who]), reviews[who], approvals[who]) for who in seen), key=lambda r: (-r[1], -r[2], r[0]))
-    return rows[:10], own
-
-
-def authors_expected(start, end):
-    """(author, PRs opened, merged, still open) for people, most PRs first."""
-    rows = {}
-    for p in fx.CASES:
-        if fx.is_bot(p.author) or not start <= at(p.created).date() <= end:
-            continue
-        n, m, o = rows.get(p.author, (0, 0, 0))
-        rows[p.author] = (n + 1, m + bool(p.merged), o + (p.state == "open"))
-    return sorted(((a, *v) for a, v in rows.items()), key=lambda r: (-r[1], -r[2], r[0]))[:10]
-
-
-def activity_expected(start, end, include_bots):
-    """Did anything happen? A PR opened or merged (bot PRs only if include_bots), or any review submitted."""
-    for p in people(include_bots):
-        if any(stamp and start <= at(stamp).date() <= end for stamp in (p.created, p.merged)):
-            return True
-    return any(start <= at(x[3]).date() <= end for p in fx.CASES for x in p.reviews)
-
 
 RAW_SQL = """
 with first_review as (
@@ -439,7 +352,7 @@ def test_funnel_known_values_and_bot_effect():
     facts = fx.facts()
     everyone, humans = queries.review_funnel(*FULL, True), queries.review_funnel(*FULL, False)
     assert everyone == funnel_expected(True) and humans == funnel_expected(False)
-    assert (everyone["opened"], everyone["merged"], everyone["closed_without_merge"], everyone["still_open"]) == (facts["prs"], facts["merged"], facts["closed_without_merge"], facts["open"]) == (50, 39, 6, 5)
+    assert (everyone["opened"], everyone["merged"], everyone["closed_without_merge"], everyone["still_open"]) == (facts["prs"], facts["merged"], facts["closed_without_merge"], facts["open"]) == (50, 39, 5, 6)
     assert everyone["opened"] - humans["opened"] == facts["bot_prs"] == 14  # the bot PRs
     assert humans["merged"] == facts["human_merged"] == 27 and humans["merged_without_review"] == facts["human_merged_not_reviewed_before_merge"] == 5
 
@@ -531,12 +444,12 @@ def test_open_pr_age_known_values_and_every_bucket_is_present():
 
     both, people_only = ages(True), ages(False)
     o = queries.open_pr_age(*FULL, True)
-    assert (o["open_prs"], o["never_reviewed"]) == (len(both), sum(1 for _, p in both if not p.reviews)) == (fx.facts()["open"], fx.facts()["open_never_reviewed"]) == (5, 2)
+    assert (o["open_prs"], o["never_reviewed"]) == (len(both), sum(1 for _, p in both if not p.reviews)) == (fx.facts()["open"], fx.facts()["open_never_reviewed"]) == (6, 3)
     assert o["median_age_days"] == pytest.approx(statistics.median(a for a, _ in both), abs=0.001)
     assert o["oldest_age_days"] == pytest.approx(max(a for a, _ in both), abs=0.001)
-    assert o["oldest"]["pr_number"].iloc[0] == 1012  # the ancient open PR, created 2023-04 and never reviewed
+    assert o["oldest"]["pr_number"].iloc[0] == 1012  # the ancient open PR, created 2023-07 and never reviewed
     assert [label for label, _ in o["age_buckets"]] == [b[0] for b in queries.AGE_BUCKETS]
-    assert [n for _, n in o["age_buckets"]] == bucket_counts([a for a, _ in both]) and sum(n for _, n in o["age_buckets"]) == 5
+    assert [n for _, n in o["age_buckets"]] == bucket_counts([a for a, _ in both]) and sum(n for _, n in o["age_buckets"]) == 6
     assert queries.open_pr_age(*FULL, False)["open_prs"] == len(people_only)
 
 
@@ -614,7 +527,7 @@ def test_reviewers_and_authors_are_people_only():
 @pytest.mark.fixture_numbers
 def test_self_comments_are_left_out_and_reviews_are_ranked_by_distinct_prs():
     got = queries.top_reviewers(*FULL)
-    rows, own = reviewers_expected(*FULL)
+    rows, own = reviewers_expected(FULL)
     assert [tuple(r) for r in got["reviewers"].itertuples(index=False)] == rows
     assert got["own_pr_comments_left_out"] == own == 1  # erin's comment on her own PR 1016
     top = got["reviewers"].set_index("reviewer")
@@ -653,7 +566,7 @@ def test_has_activity_matches_the_known_windows():
     review_day = (D(2023, 2, 7), D(2023, 2, 7))  # one day with a review (on a PR opened earlier) and no PR opened or merged
     for window, bots, expected in [(nothing, True, False), (nothing, False, False), (reviews_only, False, True), (reviews_only, True, True),
                                    (bots_only, False, False), (bots_only, True, True), (review_day, False, True), (review_day, True, True), (FULL, False, True), (FULL, True, True)]:
-        assert queries.has_activity(*window, bots) == activity_expected(*window, bots) == expected, (window, bots)
+        assert queries.has_activity(*window, bots) == activity_expected(window, bots) == expected, (window, bots)
     # a quiet window after the last event: nothing at all
     assert not queries.has_activity(D(2026, 3, 30), D(2026, 8, 28), True)
 

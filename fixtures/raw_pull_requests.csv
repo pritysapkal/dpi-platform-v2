@@ -44,7 +44,7 @@ number,title,state,merged,author,created_at,updated_at,merged_at,closed_at,_load
 1043,WIP: rewrite the connection pool,open,false,erin,2025-04-07T10:00:00Z,2025-04-08T10:00:00Z,,,2026-01-15 12:00:00
 1044,Add a timeout example to the docs,closed,true,ivan,2025-05-05T10:00:00Z,2025-05-06T10:00:00Z,2025-05-06T10:00:00Z,2025-05-06T10:00:00Z,2026-01-15 12:00:00
 1045,Fix a flaky test,closed,true,alice,2025-06-02T10:00:00Z,2025-06-02T11:00:00Z,2025-06-02T11:00:00Z,2025-06-02T11:00:00Z,2026-01-15 12:00:00
-1046,Bump typing-extensions from 4.9.0 to 4.10.0,closed,false,dependabot[bot],2025-07-07T08:00:00Z,2025-07-14T08:00:00Z,,2025-07-14T08:00:00Z,2026-01-15 12:00:00
+1046,Bump typing-extensions from 4.9.0 to 4.10.0,open,false,dependabot[bot],2025-07-07T08:00:00Z,2025-07-07T08:00:00Z,,,2026-01-15 12:00:00
 1047,Expose the response elapsed time,closed,true,frank,2025-09-01T10:00:00Z,2025-09-03T10:00:00Z,2025-09-03T10:00:00Z,2025-09-03T10:00:00Z,2026-01-15 12:00:00
 1048,Bump idna from 3.6 to 3.7,closed,true,dependabot[bot],2025-11-03T08:00:00Z,2025-11-03T09:00:00Z,2025-11-03T09:00:00Z,2025-11-03T09:00:00Z,2026-01-15 12:00:00
 1049,Add support for HTTP proxies with auth,open,false,judy,2026-01-05T10:00:00Z,2026-01-06T10:00:00Z,,,2026-01-15 12:00:00
