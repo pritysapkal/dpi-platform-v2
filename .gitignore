@@ -11,3 +11,6 @@ venv/
 agent/traces/
 __pycache__/
 .pytest_cache/
+
+# dbt writes an anonymous usage id here when run with --profiles-dir profiles
+profiles/.user.yml

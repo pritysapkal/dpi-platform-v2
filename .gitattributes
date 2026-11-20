@@ -1,0 +1,7 @@
+# Keep line endings the same on every machine, whatever core.autocrlf says.
+# The fixture CSVs are compared byte for byte with what the generator writes, and the frozen CSVs are pinned by hash,
+# so a Windows checkout must not turn their line feeds into carriage return + line feed.
+* text=auto eol=lf
+*.csv text eol=lf
+*.duckdb binary
+*.png binary
