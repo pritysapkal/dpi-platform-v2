@@ -322,11 +322,11 @@ streamlit run app.py
 Opens at http://localhost:8501. Connects read-only, so it's safe to leave
 running while `dbt build` runs elsewhere (results refresh within 60 seconds).
 
-**Tests:** `python -m pytest dashboard/tests` (needs `dev.duckdb`). The expected numbers
-are recomputed from the raw tables with separate SQL, the real app is run headlessly with
-Streamlit's `AppTest` (with bots on and off, for 2024, for each date preset and for empty
-ranges), the chart builder is tested on its specification (integer axes, band axis), and the
-findings tests check that the README's numbers match the data.
+**Tests:** see [Testing](#testing). The dashboard's numbers are recomputed from the raw tables with
+separate SQL, and pinned to the 50-PR test fixture whose answers were worked out by hand. The real app is
+run headlessly with Streamlit's `AppTest` (with bots on and off, for 2024, for each date preset and for
+empty ranges), the chart builder is tested on its specification (integer axes, band axis), and the
+findings tests check that the README's numbers match a frozen copy of the data they describe.
 
 ## Known limitations / what I'd do at scale
 
@@ -357,15 +357,11 @@ findings tests check that the README's numbers match the data.
   deeply rather than several done shallowly. A production DORA implementation
   would also need CI/CD data for the other two DORA metrics (Change Failure
   Rate, Time to Restore Service).
-- **CI queries live data, so results aren't deterministic run-to-run.** CI
-  re-fetches real data from `encode/httpx` on every push, which is realistic
-  but means a green run today doesn't guarantee identical numbers tomorrow —
-  the underlying repo keeps changing. At scale, I'd separate "does the
-  pipeline logic work" (tested against a fixed fixture dataset in CI) from "is
-  production data healthy" (monitored separately against live data). Today the
-  tests that read the real data don't run in CI at all (see "What CI runs"); the
-  plan is fixture data for the logic tests on every push, and a scheduled daily run
-  against live data for the data-pinned ones.
+- **CI runs on frozen and made-up data, so it can't tell you today's live data is healthy.** Every push builds the
+  warehouse from files in the repository (a 50-PR fixture and a frozen copy of the 2026-11-01 pull), which makes a green
+  run deterministic, but a change in GitHub's API or in the live data would not show up there. A scheduled daily run
+  against live data (checking freshness and the tests that hold on any data) is the planned answer; see
+  [Testing](#testing).
 - **No orchestration.** The pipeline only runs on `git push` via CI, not on a
   recurring schedule. At scale it would run on a schedule (Airflow, Dagster,
   or even a cron-triggered GitHub Actions workflow) so the marts and metrics
@@ -387,13 +383,8 @@ mf list metrics                        # semantic layer
 cd dashboard && pip install -r requirements.txt && streamlit run app.py   # dashboard
 ```
 
-Tests (each needs `dev.duckdb`, built by the steps above, except where noted):
-
-```
-python -m pytest ingestion_tests       # fetch_prs.py with fake HTTP responses, no network or token
-python -m pytest agent/tests           # the agent, no API key needed
-python -m pytest dashboard/tests       # dashboard numbers, the real app, and the README's findings
-```
+Tests: see [Testing](#testing) below. The short version: `python -m pytest ingestion_tests agent/tests dashboard/tests`
+runs everything that needs no database; the rest needs a database file, and which one is explained there.
 
 `mf` needs `DBT_PROFILES_DIR` pointing at the folder with your `profiles.yml`, on every system:
 unlike `dbt`, it does not look in `~/.dbt` by itself and stops with "Could not find profile". On Windows
@@ -403,15 +394,55 @@ Run `dbt parse` (or `dbt build`) before `mf validate-configs`. If the project no
 carry on and validate the *previous* manifest in `target/`, and report success for a config that is
 actually broken. CI avoids this because it starts clean and runs `dbt build` first.
 
-**What CI runs** (`.github/workflows/ci.yml`, on every push to `main` and every pull request):
-- **`python-tests`**: `pytest` on `ingestion_tests`, `agent/tests` and `dashboard/tests` with no database and no
-  secrets, so it is deterministic and also runs for pull requests from forks. The 230 tests that read the real data
-  (`test_tools`, `test_eval_set`, and the dashboard's `test_queries`, `test_app` and `test_findings`) skip themselves
-  with the reason "dev.duckdb not built"; the 260 that need no database run: 32 ingestion, 211 agent and 17
-  dashboard-helper tests.
-- **`dbt-build-and-test`**: the live fetch from GitHub, `dbt build` (models, data tests and unit tests), then
-  `mf validate-configs`, which catches semantic-layer mistakes that parse fine but break against the real tables
-  (a mistyped column in a measure, dimension or entity, or a filter on a dimension that doesn't exist).
+## Testing
+
+The pipeline is tested on **three kinds of data**, because one kind cannot answer every question. A test says which kind
+it needs with a marker, and a rule in `conftest.py` makes it fail loudly (never skip) if it is pointed at the wrong one.
+
+| Kind of data | What it is | What it is for |
+|---|---|---|
+| **Fixture** (`fixtures/`) | 50 made-up pull requests, written by hand so that every awkward situation appears at least once (a review one second after the merge, a bot with "bot" in a person's name, an empty month, a leap day...). Never changes. | Checking the **code**. Every expected number is worked out from the case table in plain Python (`facts()`, `period_facts()`, `dashboard/tests/answer_key.py`), never copied from what the code prints. |
+| **Frozen** (`fixtures/frozen/`) | A saved copy of the real pull of 2026-11-01 (523 PRs, 835 reviews), pinned by hash. | Checking that the **README's key findings** are still true of the data they describe. |
+| **Live** (`dev.duckdb`, today's pull) | The real, changing data. | Checking things that must hold **whatever the data is**: counts add up, a number on the dashboard equals a fresh recount from the raw tables. |
+
+Four markers (`pytest.ini`) put every test in exactly one group; a test checks that none is left out:
+
+| Marker | Meaning | Tests |
+|---|---|---|
+| `no_db` | touches no database at all (a guard fails the test if it tries) | 415 |
+| `any_data` | reads the database, asserts only what is true on any data | 117 |
+| `fixture_numbers` | exact figures of the fixture | 64 |
+| `frozen_data` | exact figures of the frozen real pull (the README findings) | 7 |
+
+Which tests each automated run executes is written once, in `workflow_selections.py`: every push runs everything except
+`frozen_data` on the fixture (596 tests) and then `frozen_data` on the frozen copy (7); the planned daily live run (not built yet) is limited to
+`no_db or any_data` (532 tests), so a number that is only true of one day's data can never fail it. A test that belongs to
+no run would never execute, so `ingestion_tests/test_marker_coverage.py` fails if any test is unclassified or unselected.
+
+**Zero skips.** With `DPIP_FAIL_ON_SKIP=1` (set in CI) a skipped test is reported as a failure that names its reason.
+Before this, CI said "260 passed, 230 skipped" and looked green while the 230 data-backed tests never ran; now a green run
+means everything selected really ran.
+
+Running it yourself (the same variable, `DPIP_DB_PATH`, points dbt, `mf`, the dashboard, the agent and the tests at one
+database file; it defaults to `dev.duckdb`):
+
+```
+export DBT_PROFILES_DIR=profiles
+python fixtures/load_fixture.py fixture.duckdb fixture        # or: frozen.duckdb frozen
+DPIP_DB_PATH=fixture.duckdb dbt build
+DPIP_DB_PATH=fixture.duckdb python -m pytest -m "not frozen_data"
+DPIP_DB_PATH=frozen.duckdb  python -m pytest -m frozen_data   # after building frozen.duckdb the same way
+python -m pytest -m "no_db or any_data"                       # on dev.duckdb: what the live run will check
+```
+
+`mf` reads the database's name from dbt's saved manifest, so after building a different file, run `dbt parse` (or
+`dbt build`) against that same file before `mf validate-configs`; otherwise it looks for the previous file's name.
+
+**What CI runs** (`.github/workflows/ci.yml`, on every push to `main` and every pull request, no secrets and no network):
+load the fixture, `dbt build` (models, data tests and unit tests), `mf validate-configs` (catches semantic-layer mistakes
+that parse fine but break against the tables), then the full test run with `DPIP_FAIL_ON_SKIP=1`; then load the frozen
+copy, `dbt build` again, and run the README-findings tests. The live fetch from GitHub moved out of this workflow: it
+needs a secret, and its result changes every day, so it does not belong in a gate that must be repeatable.
 
 ## DPIP Agent
 
