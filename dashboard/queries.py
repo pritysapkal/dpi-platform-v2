@@ -16,7 +16,7 @@ import datetime
 import os
 from pathlib import Path
 
-import duckdb
+import data_source
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 # DPIP_DB_PATH points the dashboard at another database file (the test fixture, the frozen copy of the real data);
@@ -24,9 +24,15 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.environ.get("DPIP_DB_PATH") or PROJECT_DIR / "dev.duckdb")
 
 
+def source() -> data_source.Source:
+    """Where the data comes from right now: the local database if there is one, otherwise the published snapshot
+    (see data_source.py). The SQL below is the same for both: the snapshot is read through views with the same names."""
+    return data_source.active(DB_PATH)
+
+
 def run(sql: str, params: list | None = None) -> list[tuple]:
-    """Run one query on a read-only connection, so this never competes with dbt for the file lock."""
-    con = duckdb.connect(str(DB_PATH), read_only=True)
+    """Run one query. The local database is opened read-only, so this never competes with dbt for the file lock."""
+    con = source().connect()
     try:
         return con.execute(sql, params or []).fetchall()
     finally:
@@ -34,7 +40,7 @@ def run(sql: str, params: list | None = None) -> list[tuple]:
 
 
 def run_df(sql: str, params: list | None = None):
-    con = duckdb.connect(str(DB_PATH), read_only=True)
+    con = source().connect()
     try:
         return con.execute(sql, params or []).df()
     finally:

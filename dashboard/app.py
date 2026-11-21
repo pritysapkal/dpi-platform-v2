@@ -1,54 +1,69 @@
 import streamlit as st
 
 import charts
+import data_source
 import presets
 import queries
 
 st.set_page_config(page_title="PR Lifecycle & DORA Metrics", layout="wide")
 
+# Where the data comes from: the local database (dev.duckdb) when there is one, otherwise the snapshot the daily refresh
+# publishes to the `data` branch (data_source.py). Without either there are no numbers to show, so say why and stop.
+try:
+    source = queries.source()
+except data_source.SnapshotUnavailable as error:
+    st.title("PR Lifecycle & DORA Metrics")
+    st.error(
+        "The data could not be loaded. There is no local database (dev.duckdb), and the published snapshot could not "
+        f"be downloaded or did not pass its checksum check: {error}. Please try again in a few minutes."
+    )
+    st.stop()
+# Part of every cache key below: switching source, or a newly downloaded snapshot, never serves numbers cached from the old one.
+source_id = f"{source.kind}:{source.db_path or source.snapshot_dir}"
+
 
 @st.cache_data(ttl=60)
-def load_window():
+def load_window(source_id):
     return queries.data_window()
 
 
 @st.cache_data(ttl=60)
-def load_activity(start, end, include_bots):
+def load_activity(source_id, start, end, include_bots):
     return queries.has_activity(start, end, include_bots)
 
 
 @st.cache_data(ttl=60)
-def load_kpis(start, end, include_bots):
+def load_kpis(source_id, start, end, include_bots):
     return queries.kpis(start, end, include_bots)
 
 
 @st.cache_data(ttl=60)
-def load_trend(start, end, include_bots, grain):
+def load_trend(source_id, start, end, include_bots, grain):
     return queries.trend(start, end, include_bots, grain)
 
 
 @st.cache_data(ttl=60)
-def load_breakdown(start, end):
+def load_breakdown(source_id, start, end):
     return queries.lead_time_breakdown(start, end)
 
 
 @st.cache_data(ttl=60)
-def load_funnel(start, end, include_bots):
+def load_funnel(source_id, start, end, include_bots):
     return queries.review_funnel(start, end, include_bots)
 
 
 @st.cache_data(ttl=60)
-def load_open_prs(start, end, include_bots):
+def load_open_prs(source_id, start, end, include_bots):
     return queries.open_pr_age(start, end, include_bots)
 
 
 @st.cache_data(ttl=60)
-def load_reviewers(start, end):
+def load_reviewers(source_id, start, end):
     return queries.top_reviewers(start, end)
 
 
 @st.cache_data(ttl=60)
-def load_authors(start, end):
+def load_authors(source_id, start, end):
     return queries.top_authors(start, end)
 
 
@@ -60,13 +75,20 @@ def days_note(value):
     return None if value is None else f"≈ {value / 24:,.1f} days"
 
 
-first_day, last_day, data_as_of = load_window()
+first_day, last_day, data_as_of = load_window(source_id)
 
 st.title("PR Lifecycle & DORA Metrics")
 st.caption(
-    f"encode/httpx · Data as of {data_as_of:%Y-%m-%d %H:%M} UTC (when it was last pulled from GitHub). "
-    "A merged pull request is used as a proxy for a deployment."
+    f"encode/httpx · Data as of {data_as_of:%Y-%m-%d %H:%M} UTC (when it was last pulled from GitHub) · "
+    f"Source: {source.label}. A merged pull request is used as a proxy for a deployment."
 )
+if source.notice:
+    st.warning(source.notice)
+if data_source.is_stale(data_as_of):
+    st.warning(
+        f"This data is more than {data_source.STALE_AFTER.days * 24} hours old: it was last pulled from GitHub on "
+        f"{data_as_of:%Y-%m-%d %H:%M} UTC. The daily refresh may be failing; the figures below are as of that pull."
+    )
 
 def apply_preset(span):
     """Button callback: runs before the page redraws, so the date picker already shows the new range."""
@@ -134,8 +156,8 @@ st.caption(
 
 # Nothing at all in this range with these filters: say so and show nothing else, instead of a
 # page of empty charts.
-if not load_activity(start, end, include_bots):
-    if not include_bots and load_activity(start, end, True):
+if not load_activity(source_id, start, end, include_bots):
+    if not include_bots and load_activity(source_id, start, end, True):
         st.info(
             "No human-authored pull request activity in this date range. Bot PRs were active in it: tick "
             "\"Include bot PRs\" in the sidebar to see them, or widen the date range."
@@ -144,7 +166,7 @@ if not load_activity(start, end, include_bots):
         st.info("No pull request activity in this date range. Try a wider date range.")
     st.stop()
 
-k = load_kpis(start, end, include_bots)
+k = load_kpis(source_id, start, end, include_bots)
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Merged PRs", f"{k['merged_prs']:,}", help="Pull requests merged in the date range.")
@@ -185,7 +207,7 @@ else:
     grain_label = st.radio("Group by", ["Monthly", "Weekly"], horizontal=True, key="grain")
     grain = "month" if grain_label == "Monthly" else "week"
     unit = grain  # "month" or "week", for captions
-    trend = load_trend(start, end, include_bots, grain)
+    trend = load_trend(source_id, start, end, include_bots, grain)
 
     st.markdown("**Deployment frequency: PRs merged per " + unit + "**")
     st.altair_chart(
@@ -228,7 +250,7 @@ st.caption(
     "Human-authored PRs only, whatever the bot checkbox says: bot PRs such as dependabot are not reviewed the "
     "same way. Covers merged PRs that were reviewed before they were merged, in the date range."
 )
-b = load_breakdown(start, end)
+b = load_breakdown(source_id, start, end)
 
 if b["split_prs"] == 0:
     st.info("No human-authored PRs in this date range were reviewed before being merged, so there is nothing to split.")
@@ -274,7 +296,7 @@ else:
 st.divider()
 
 st.subheader("Review funnel: opened, reviewed, approved, merged")
-f = load_funnel(start, end, include_bots)
+f = load_funnel(source_id, start, end, include_bots)
 
 if f["opened"] == 0:
     st.info("No PRs were opened in this date range with these filters.")
@@ -318,7 +340,7 @@ st.caption(
     f"Ages are measured up to {data_as_of:%Y-%m-%d} (when the data was pulled), not today, so they don't change "
     "from day to day. Covers PRs opened in the date range that were still open at that point."
 )
-o = load_open_prs(start, end, include_bots)
+o = load_open_prs(source_id, start, end, include_bots)
 
 if o["open_prs"] == 0:
     st.info("No PRs opened in this date range were still open when the data was pulled.")
@@ -371,9 +393,9 @@ st.caption(
     "People only, whatever the bot checkbox says: automated accounts are left out, both as authors and as "
     "reviewers. Reviews are counted by the day they were submitted, PRs by the day they were opened."
 )
-rv = load_reviewers(start, end)
+rv = load_reviewers(source_id, start, end)
 reviewers = rv["reviewers"]
-authors = load_authors(start, end)
+authors = load_authors(source_id, start, end)
 
 col_rev, col_auth = st.columns(2)
 with col_rev:
