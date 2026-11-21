@@ -357,15 +357,14 @@ findings tests check that the README's numbers match a frozen copy of the data t
   deeply rather than several done shallowly. A production DORA implementation
   would also need CI/CD data for the other two DORA metrics (Change Failure
   Rate, Time to Restore Service).
-- **CI runs on frozen and made-up data, so it can't tell you today's live data is healthy.** Every push builds the
-  warehouse from files in the repository (a 50-PR fixture and a frozen copy of the 2026-11-01 pull), which makes a green
-  run deterministic, but a change in GitHub's API or in the live data would not show up there. A scheduled daily run
-  against live data (checking freshness and the tests that hold on any data) is the planned answer; see
-  [Testing](#testing).
-- **No orchestration.** The pipeline only runs on `git push` via CI, not on a
-  recurring schedule. At scale it would run on a schedule (Airflow, Dagster,
-  or even a cron-triggered GitHub Actions workflow) so the marts and metrics
-  stay fresh independent of code changes.
+- **The live data is checked once a day, not continuously.** Every push builds the warehouse from files in the
+  repository (a 50-PR fixture and a frozen copy of the 2026-11-01 pull), which makes a green run deterministic but
+  blind to a change in GitHub's API or in the live data. The [daily refresh](#daily-data-refresh-and-alerts) covers
+  that, so a problem can go unnoticed for up to a day. GitHub can also pause scheduled workflows in a repository with
+  no activity for a while, which is why a stale-data warning on the dashboard is planned next.
+- **Orchestration is a cron-triggered GitHub Actions workflow.** It is enough for one repository and one daily
+  pull. At scale I'd move to an orchestrator (Airflow, Dagster) for retries per step, backfills, dependencies
+  between pipelines and a history of runs that is easier to query than workflow logs.
 - **The dashboard is a script, not a BI tool.** No auth, no sharing link, no
   multi-user access — you run it locally and it's just for you. At scale I'd
   either revisit a real BI/semantic-layer-aware tool (once one exists with a
@@ -409,14 +408,14 @@ Four markers (`pytest.ini`) put every test in exactly one group; a test checks t
 
 | Marker | Meaning | Tests |
 |---|---|---|
-| `no_db` | touches no database at all (a guard fails the test if it tries) | 415 |
+| `no_db` | touches no database at all (a guard fails the test if it tries) | 428 |
 | `any_data` | reads the database, asserts only what is true on any data | 117 |
-| `fixture_numbers` | exact figures of the fixture | 64 |
+| `fixture_numbers` | exact figures of the fixture | 65 |
 | `frozen_data` | exact figures of the frozen real pull (the README findings) | 7 |
 
 Which tests each automated run executes is written once, in `workflow_selections.py`: every push runs everything except
-`frozen_data` on the fixture (596 tests) and then `frozen_data` on the frozen copy (7); the planned daily live run (not built yet) is limited to
-`no_db or any_data` (532 tests), so a number that is only true of one day's data can never fail it. A test that belongs to
+`frozen_data` on the fixture (610 tests) and then `frozen_data` on the frozen copy (7); the daily live run is limited to
+`no_db or any_data` (545 tests), so a number that is only true of one day's data can never fail it. A test that belongs to
 no run would never execute, so `ingestion_tests/test_marker_coverage.py` fails if any test is unclassified or unselected.
 
 **Zero skips.** With `DPIP_FAIL_ON_SKIP=1` (set in CI) a skipped test is reported as a failure that names its reason.
@@ -442,7 +441,43 @@ python -m pytest -m "no_db or any_data"                       # on dev.duckdb: w
 load the fixture, `dbt build` (models, data tests and unit tests), `mf validate-configs` (catches semantic-layer mistakes
 that parse fine but break against the tables), then the full test run with `DPIP_FAIL_ON_SKIP=1`; then load the frozen
 copy, `dbt build` again, and run the README-findings tests. The live fetch from GitHub moved out of this workflow: it
-needs a secret, and its result changes every day, so it does not belong in a gate that must be repeatable.
+needs a secret, and its result changes every day, so it does not belong in a gate that must be repeatable. It runs in
+the daily refresh instead.
+
+## Daily data refresh and alerts
+
+`.github/workflows/refresh.yml` keeps the data fresh and checks it, every day at **02:47 UTC** (an off-peak minute,
+since GitHub delays schedules that start on the hour), and whenever someone starts it by hand from the Actions tab.
+
+**What a run does**, stopping at the first step that fails:
+
+1. **Fetch** every PR and review from GitHub (`fetch_prs.py`, with the `GH_TOKEN` secret; only this step sees it).
+2. **`dbt build`**: rebuild every model and run every data test and unit test on the new data.
+3. **`dbt source freshness`**: how old is the newest fetch? Every raw row carries `_loaded_at`, the UTC time of the fetch
+   that wrote it. Older than **36 hours** is a warning (one day was missed); older than **72 hours** fails the run (the
+   data is three days stale). Right after a successful fetch this passes easily; it is there to catch a fetch that
+   "succeeds" without writing new data, and it is the same rule the dashboard's stale-data warning will use.
+4. **`mf validate-configs`**: the metric definitions still work against the new tables.
+5. **The tests that hold on any data** (`no_db or any_data`, 545 tests) with `DPIP_FAIL_ON_SKIP=1`. Tests that pin exact
+   numbers are left out on purpose: today's numbers differ from yesterday's, and those tests already run on fixed data
+   on every push.
+
+**Nothing fails silently.** A second job, `alert`, runs after the refresh whether it passed or failed:
+
+- the refresh **failed**: it opens a GitHub issue titled "Daily data refresh is failing", labelled
+  `data-refresh-failure`, with a link to the run and the name of the step that failed. If that issue is already open,
+  it adds a comment instead, so a week of failures is one issue with seven comments, not seven issues. GitHub notifies
+  the repository's watchers of the new issue.
+- the refresh **succeeded**: if a failure issue is open, it comments with a link to the run that recovered and closes
+  the issue.
+
+The logic is in `ops/refresh_alert.py` and uses the `gh` command line with the workflow's own short-lived token.
+Permissions are the minimum per job: the refresh can only read the repository; the alert job can also write issues and
+read run details (to name the failed step).
+
+**Trying it out:** from the Actions tab, run "Daily data refresh" by hand with **simulate_failure** ticked. The run fails
+on purpose before fetching anything and an issue opens; run it again normally and the issue closes.
+
 
 ## DPIP Agent
 
