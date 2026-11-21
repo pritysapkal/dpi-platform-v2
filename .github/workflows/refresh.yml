@@ -1,7 +1,9 @@
 name: Daily data refresh
 
-# Once a day, pull the live data from GitHub, rebuild the warehouse and check it. If anything fails, the alert job opens
-# (or updates) a GitHub issue labelled data-refresh-failure; the next successful run closes it. Nothing fails silently.
+# Once a day, pull the live data from GitHub, rebuild the warehouse and check it. Only if every check passes, the tables
+# the dashboard reads are exported to Parquet and force-pushed to the `data` branch, where the public dashboard downloads
+# them. If anything fails, the alert job opens (or updates) a GitHub issue labelled data-refresh-failure; the next
+# successful run closes it. Nothing fails silently, and a failed run never publishes.
 on:
   schedule:
     - cron: "47 2 * * *"  # 02:47 UTC daily; an off-peak minute, since GitHub delays schedules that start on the hour
@@ -77,11 +79,65 @@ jobs:
       - name: pytest, live-safe tests only (zero skips)
         run: python -m pytest ingestion_tests agent/tests dashboard/tests -q -rs -m "$(python workflow_selections.py scheduled-live)"
 
+      # Reached only when every step above passed. The export reads its own files back and compares them with the
+      # database before it finishes, so a bad snapshot fails here.
+      - name: Export the dashboard snapshot (Parquet + manifest.json)
+        run: python ops/export_snapshot.py dev.duckdb snapshot
+
+      - name: Hand the snapshot to the publish job
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot
+          path: snapshot/
+          if-no-files-found: error
+          retention-days: 7
+
+  # A separate job, so the one job that can write to the repository never sees the GitHub API token and runs nothing
+  # but git. Runs only when the refresh job succeeded (the default for `needs`).
+  publish:
+    name: Publish the snapshot to the data branch
+    needs: refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write  # to push the data branch
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Fetch the snapshot from the refresh job
+        uses: actions/download-artifact@v4
+        with:
+          name: snapshot
+          path: ${{ runner.temp }}/snapshot
+
+      # One commit with no history (an orphan branch), force-pushed: the data branch always holds exactly the newest
+      # snapshot and never grows. A push made with the workflow's own token starts no other workflow.
+      - name: Force-push the snapshot as a single commit to the data branch
+        env:
+          SNAPSHOT_DIR: ${{ runner.temp }}/snapshot
+        run: |
+          set -euo pipefail
+          test -f "$SNAPSHOT_DIR/manifest.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --quiet --orphan data-snapshot
+          git rm -r --quiet --cached .
+          git clean -fdxq
+          cp "$SNAPSHOT_DIR"/* .
+          git add -A
+          as_of=$(python3 -c "import json; print(json.load(open('manifest.json'))['data_as_of'])")
+          git commit --quiet -m "Data snapshot as of ${as_of}, built from ${GITHUB_SHA}"
+          git push --force origin HEAD:refs/heads/data
+          echo "published commit $(git rev-parse --short HEAD) to the data branch, files:" && ls -l
+
   alert:
     name: Open or close the failure issue
-    needs: refresh
-    # Runs after a success or a failure of the refresh, not after a cancellation.
-    if: ${{ always() && (needs.refresh.result == 'failure' || needs.refresh.result == 'success') }}
+    needs: [refresh, publish]
+    # Runs after a failure of either job or a success of both, not after a cancellation. When the refresh fails, the
+    # publish job is skipped, so "publish succeeded" means the whole run succeeded.
+    if: ${{ always() && (needs.refresh.result == 'failure' || needs.publish.result == 'failure' || needs.publish.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -99,10 +155,10 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Open or update the issue (refresh failed)
-        if: ${{ needs.refresh.result == 'failure' }}
+      - name: Open or update the issue (refresh or publish failed)
+        if: ${{ needs.refresh.result == 'failure' || needs.publish.result == 'failure' }}
         run: python3 ops/refresh_alert.py failure
 
-      - name: Close the issue if one is open (refresh succeeded)
-        if: ${{ needs.refresh.result == 'success' }}
+      - name: Close the issue if one is open (refreshed and published)
+        if: ${{ needs.publish.result == 'success' }}
         run: python3 ops/refresh_alert.py success

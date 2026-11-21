@@ -129,12 +129,13 @@ def test_permissions_are_the_minimum_each_job_needs(workflow):
     assert workflow["permissions"] == {}
     assert workflow["jobs"]["refresh"]["permissions"] == {"contents": "read"}
     assert workflow["jobs"]["alert"]["permissions"] == {"contents": "read", "issues": "write", "actions": "read"}
+    assert workflow["jobs"]["publish"]["permissions"] == {"contents": "write"}  # the only job that can write; it runs no project code, only git
 
 
 def test_the_refresh_steps_run_in_the_planned_order_with_zero_skips(workflow):
     job = workflow["jobs"]["refresh"]
     commands = [s.get("run", "") for s in job["steps"]]
-    order = ["exit 1", "python fetch_prs.py", "dbt build", "dbt source freshness", "mf validate-configs", "pytest"]
+    order = ["exit 1", "python fetch_prs.py", "dbt build", "dbt source freshness", "mf validate-configs", "pytest", "export_snapshot.py"]
     positions = [next(i for i, c in enumerate(commands) if needle in c) for needle in order]
     assert positions == sorted(positions)
     assert job["env"]["DPIP_FAIL_ON_SKIP"] == "1" and job["env"]["DPIP_DB_PATH"] == "dev.duckdb"
@@ -152,13 +153,38 @@ def test_the_live_run_selects_only_tests_that_hold_on_any_data(workflow):
 
 def test_the_alert_runs_after_success_or_failure_but_not_after_a_cancellation(workflow):
     alert = workflow["jobs"]["alert"]
-    assert alert["needs"] == "refresh"
+    assert alert["needs"] == ["refresh", "publish"]
     condition = alert["if"]
-    assert "always()" in condition and "'failure'" in condition and "'success'" in condition and "cancelled" not in condition
+    assert condition == ("${{ always() && (needs.refresh.result == 'failure' || needs.publish.result == 'failure' "
+                         "|| needs.publish.result == 'success') }}")
     steps = {s.get("if"): s.get("run") for s in alert["steps"] if "run" in s}
-    assert steps["${{ needs.refresh.result == 'failure' }}"] == "python3 ops/refresh_alert.py failure"
-    assert steps["${{ needs.refresh.result == 'success' }}"] == "python3 ops/refresh_alert.py success"
+    assert steps["${{ needs.refresh.result == 'failure' || needs.publish.result == 'failure' }}"] == "python3 ops/refresh_alert.py failure"
+    assert steps["${{ needs.publish.result == 'success' }}"] == "python3 ops/refresh_alert.py success"
     assert alert["env"]["GH_TOKEN"] == "${{ github.token }}"  # the workflow's own short-lived token, no personal token
+
+
+# ---------- publishing the snapshot ----------
+
+def test_the_snapshot_is_exported_only_after_every_check_and_handed_over_as_an_artifact(workflow):
+    steps = workflow["jobs"]["refresh"]["steps"]
+    export = next(i for i, s in enumerate(steps) if "export_snapshot.py" in s.get("run", ""))
+    assert steps[export]["run"] == "python ops/export_snapshot.py dev.duckdb snapshot" and "if" not in steps[export]
+    assert all("if" not in s or s["if"] == "${{ inputs.simulate_failure }}" for s in steps[:export])  # no step is optional
+    upload = steps[export + 1]
+    assert upload["uses"] == "actions/upload-artifact@v4" and upload["with"]["name"] == "snapshot"
+    assert upload["with"]["if-no-files-found"] == "error" and export + 2 == len(steps)
+
+
+def test_publish_waits_for_a_successful_refresh_and_force_pushes_one_orphan_commit_to_the_data_branch(workflow):
+    job = workflow["jobs"]["publish"]
+    assert job["needs"] == "refresh" and "if" not in job  # default: only after the refresh job succeeded
+    uses = [s.get("uses") for s in job["steps"]]
+    assert uses[:2] == ["actions/checkout@v4", "actions/download-artifact@v4"]
+    assert job["steps"][1]["with"]["name"] == "snapshot"
+    script = job["steps"][2]["run"]
+    assert "set -euo pipefail" in script and "--orphan" in script
+    assert "git push --force origin HEAD:refs/heads/data" in script
+    assert "secrets." not in str(job) and "GH_TOKEN" not in str(job)  # the GitHub API token never reaches this job
 
 
 # ---------- the freshness rule ----------
