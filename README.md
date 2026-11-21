@@ -15,6 +15,9 @@ agent (Google Gemini) that answers plain-English questions about these metrics
 through a small set of read-only tools, with guardrails enforced in code and an
 eval set scored against SQL ground truth.
 
+**Live demo:** _link coming soon (Streamlit Community Cloud)_. It shows the latest data published by the
+[daily refresh](#daily-data-refresh-and-alerts); see [The public dashboard and the published snapshot](#the-public-dashboard-and-the-published-snapshot).
+
 ## Key findings
 
 **Scope.** Pull requests on `encode/httpx` created from 2023-01-01, pulled from GitHub
@@ -361,15 +364,14 @@ findings tests check that the README's numbers match a frozen copy of the data t
   repository (a 50-PR fixture and a frozen copy of the 2026-11-01 pull), which makes a green run deterministic but
   blind to a change in GitHub's API or in the live data. The [daily refresh](#daily-data-refresh-and-alerts) covers
   that, so a problem can go unnoticed for up to a day. GitHub can also pause scheduled workflows in a repository with
-  no activity for a while, which is why a stale-data warning on the dashboard is planned next.
+  no activity for a while; the dashboard then shows a warning once its data is more than 48 hours old.
 - **Orchestration is a cron-triggered GitHub Actions workflow.** It is enough for one repository and one daily
   pull. At scale I'd move to an orchestrator (Airflow, Dagster) for retries per step, backfills, dependencies
   between pipelines and a history of runs that is easier to query than workflow logs.
-- **The dashboard is a script, not a BI tool.** No auth, no sharing link, no
-  multi-user access — you run it locally and it's just for you. At scale I'd
-  either revisit a real BI/semantic-layer-aware tool (once one exists with a
-  sane local/self-hosted DuckDB story) or put this behind a small deployed
-  service if others need to view it.
+- **The dashboard is a script, not a BI tool.** The public copy is read-only, has no login and shows the whole
+  dataset to anyone with the link, which is fine for public open-source data. It reads a Parquet snapshot published
+  to a git branch, which suits a few files of a few hundred kilobytes once a day; at scale I'd publish to object
+  storage (S3, GCS) and put the dashboard behind authentication, or use a BI tool that reads the semantic layer.
 
 ## Running it locally
 
@@ -379,7 +381,7 @@ export GH_TOKEN=your_github_pat        # any public-repo-read token works
 python fetch_prs.py                    # pulls every PR since 2023-01-01 plus reviews (about 530 API calls)
 dbt build                              # runs every model + test
 mf list metrics                        # semantic layer
-cd dashboard && pip install -r requirements.txt && streamlit run app.py   # dashboard
+pip install -r dashboard/requirements.txt && streamlit run dashboard/app.py   # dashboard (reads dev.duckdb)
 ```
 
 Tests: see [Testing](#testing) below. The short version: `python -m pytest ingestion_tests agent/tests dashboard/tests`
@@ -408,14 +410,14 @@ Four markers (`pytest.ini`) put every test in exactly one group; a test checks t
 
 | Marker | Meaning | Tests |
 |---|---|---|
-| `no_db` | touches no database at all (a guard fails the test if it tries) | 428 |
-| `any_data` | reads the database, asserts only what is true on any data | 117 |
-| `fixture_numbers` | exact figures of the fixture | 65 |
+| `no_db` | touches no database at all (a guard fails the test if it tries) | 461 |
+| `any_data` | reads the database, asserts only what is true on any data | 123 |
+| `fixture_numbers` | exact figures of the fixture | 67 |
 | `frozen_data` | exact figures of the frozen real pull (the README findings) | 7 |
 
 Which tests each automated run executes is written once, in `workflow_selections.py`: every push runs everything except
-`frozen_data` on the fixture (610 tests) and then `frozen_data` on the frozen copy (7); the daily live run is limited to
-`no_db or any_data` (545 tests), so a number that is only true of one day's data can never fail it. A test that belongs to
+`frozen_data` on the fixture (651 tests) and then `frozen_data` on the frozen copy (7); the daily live run is limited to
+`no_db or any_data` (584 tests), so a number that is only true of one day's data can never fail it. A test that belongs to
 no run would never execute, so `ingestion_tests/test_marker_coverage.py` fails if any test is unclassified or unselected.
 
 **Zero skips.** With `DPIP_FAIL_ON_SKIP=1` (set in CI) a skipped test is reported as a failure that names its reason.
@@ -456,27 +458,88 @@ since GitHub delays schedules that start on the hour), and whenever someone star
 3. **`dbt source freshness`**: how old is the newest fetch? Every raw row carries `_loaded_at`, the UTC time of the fetch
    that wrote it. Older than **36 hours** is a warning (one day was missed); older than **72 hours** fails the run (the
    data is three days stale). Right after a successful fetch this passes easily; it is there to catch a fetch that
-   "succeeds" without writing new data, and it is the same rule the dashboard's stale-data warning will use.
+   "succeeds" without writing new data. The dashboard has its own, stricter warning: it says so once its data is
+   more than 48 hours old.
 4. **`mf validate-configs`**: the metric definitions still work against the new tables.
-5. **The tests that hold on any data** (`no_db or any_data`, 545 tests) with `DPIP_FAIL_ON_SKIP=1`. Tests that pin exact
+5. **The tests that hold on any data** (`no_db or any_data`, 584 tests) with `DPIP_FAIL_ON_SKIP=1`. Tests that pin exact
    numbers are left out on purpose: today's numbers differ from yesterday's, and those tests already run on fixed data
    on every push.
+6. **Export the snapshot** the public dashboard reads (`ops/export_snapshot.py`): reached only if every step above passed.
+7. **Publish** it to the `data` branch, in a separate job (see [below](#the-public-dashboard-and-the-published-snapshot)).
 
-**Nothing fails silently.** A second job, `alert`, runs after the refresh whether it passed or failed:
+**Nothing fails silently.** A last job, `alert`, runs after the refresh and the publish whether they passed or failed:
 
-- the refresh **failed**: it opens a GitHub issue titled "Daily data refresh is failing", labelled
+- the refresh or the publish **failed**: it opens a GitHub issue titled "Daily data refresh is failing", labelled
   `data-refresh-failure`, with a link to the run and the name of the step that failed. If that issue is already open,
   it adds a comment instead, so a week of failures is one issue with seven comments, not seven issues. GitHub notifies
   the repository's watchers of the new issue.
-- the refresh **succeeded**: if a failure issue is open, it comments with a link to the run that recovered and closes
+- both **succeeded**: if a failure issue is open, it comments with a link to the run that recovered and closes
   the issue.
 
 The logic is in `ops/refresh_alert.py` and uses the `gh` command line with the workflow's own short-lived token.
-Permissions are the minimum per job: the refresh can only read the repository; the alert job can also write issues and
-read run details (to name the failed step).
+Permissions are the minimum per job: the refresh can only read the repository; the publish job can push (and runs no project code,
+only git, and never sees the GitHub API token); the alert job can write issues and read run details (to name the
+failed step).
 
 **Trying it out:** from the Actions tab, run "Daily data refresh" by hand with **simulate_failure** ticked. The run fails
-on purpose before fetching anything and an issue opens; run it again normally and the issue closes.
+on purpose before fetching anything and an issue opens (nothing is published); run it again normally and the issue
+closes.
+
+## The public dashboard and the published snapshot
+
+The public dashboard has no database and no secrets. It reads a **snapshot**: the four tables it queries, exported to
+Parquet by the daily refresh and published to the `data` branch of this repository.
+
+**What is in the snapshot** (`ops/export_snapshot.py`): `fct_pull_requests`, `dim_contributors`, `dim_date` and
+`pr_reviews` (the cleaned reviews, `stg_github__pr_reviews`) as Parquet files, plus `manifest.json`:
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | the snapshot format; a dashboard refuses a version it does not know |
+| `generated_at` | when the export ran (UTC) |
+| `data_as_of` | when the data was pulled from GitHub (UTC) |
+| `source_commit` | the commit of `main` that built it |
+| `tables` | for each file: the table it came from, row count, size and SHA-256 |
+
+Before finishing, the export reads its own files back as the dashboard will and compares every table with the database,
+row for row and column type for column type, so a bad snapshot fails the run instead of being published.
+
+**How it is published.** Only when every check of the run has passed, a separate `publish` job force-pushes the folder to
+the `data` branch as **one commit with no history**. The branch always holds exactly the newest snapshot and never grows,
+and `main` is never touched. That job is the only one allowed to write to the repository, and it never sees the GitHub
+API token.
+
+**Where the dashboard gets its data** (`dashboard/data_source.py`), checked in this order:
+
+1. `DPIP_DATA_SOURCE=local` or `=snapshot` forces one source (useful for testing).
+2. The local database (`dev.duckdb`, or `DPIP_DB_PATH`) if the file exists: your machine, and CI.
+3. Otherwise the published snapshot, downloaded from `raw.githubusercontent.com/<repo>/data/`.
+
+The download is checked file by file against the SHA-256 in the manifest, and the verified copy is reused for up to an
+hour. If a later download fails (no network, or a half-published branch whose files don't match the manifest), the page
+keeps showing the last verified copy and says so in a banner, then tries again after five minutes. With no verified copy
+at all, it shows an error page instead of numbers. The snapshot is opened as an in-memory DuckDB database with one view
+per table, named exactly like the warehouse tables (`main.fct_pull_requests`, ...), so **every query in
+`dashboard/queries.py` runs unchanged** on either source. A test runs every query function on both and requires
+identical results.
+
+The caption names the source ("Source: local database" or "Source: published snapshot"), and a banner warns when the
+data was pulled more than **48 hours** ago, which means the daily refresh has missed at least one run.
+
+**Why the deployment installs so little.** Streamlit Community Cloud looks for a dependency file next to the entrypoint
+(`dashboard/app.py`) before the repository root, and uses the first one it finds. So it installs
+`dashboard/requirements.txt` (Streamlit, DuckDB, Altair and pandas), not the root file with dbt, MetricFlow and the
+Gemini SDK. Tests keep it that way (`dashboard/tests/test_deploy_footprint.py`): the dashboard never imports the agent,
+its requirements contain no `google-genai` or dbt, they cover every package the dashboard imports, at the same pinned
+versions as the rest of the project, and no other dependency file sits next to the entrypoint. No database file can be
+committed (`*.duckdb` is ignored), so the deployment always reads the snapshot.
+
+Trying the snapshot locally, without touching `dev.duckdb`:
+
+```
+python ops/export_snapshot.py dev.duckdb /tmp/snapshot
+DPIP_DATA_SOURCE=snapshot DPIP_SNAPSHOT_URL=file:///tmp/snapshot streamlit run dashboard/app.py
+```
 
 
 ## DPIP Agent
