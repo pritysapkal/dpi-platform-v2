@@ -387,9 +387,11 @@ with col_rev:
         )
         st.dataframe(reviewers.rename(columns={"prs_reviewed": "PRs reviewed", "reviews": "Reviews", "approvals": "Approvals"}),
                      hide_index=True, width="stretch")
+    left_out = rv["own_pr_comments_left_out"]
+    left_out_text = f"{left_out:,} comment that an author left on their own PR is" if left_out == 1 else f"{left_out:,} comments that authors left on their own PRs are"
     st.caption(
         "Ranked by how many different PRs someone reviewed, since several comments on one PR are one piece of work. "
-        f"{rv['own_pr_comments_left_out']:,} comments that authors left on their own PRs are not counted. Good looks "
+        f"{left_out_text} not counted. Good looks "
         "like the review work being spread over several people: if one name dominates, reviews stop when that person is away."
     )
 with col_auth:

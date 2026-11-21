@@ -344,8 +344,17 @@ def test_people_section_ignores_the_bot_toggle_and_follows_the_date_range():
 def test_people_section_explains_how_reviews_are_counted():
     _, own = ak.reviewers_expected()
     text = " ".join(c.value for c in run_app().caption)
-    assert f"{own:,} comments that authors left on their own PRs are not counted" in text and own == 1
+    assert own == 1 and "1 comment that an author left on their own PR is not counted" in text  # singular: erin's one comment on 1016
+    assert "1 comments" not in text
     assert "different PRs" in text and "People only" in text
+
+
+@pytest.mark.fixture_numbers
+def test_the_left_out_comments_are_counted_in_the_plural_when_there_are_none():
+    # 2024 has reviews but no author commenting on their own PR (erin's self-comment on 1016 is from 2023)
+    assert ak.reviewers_expected(Y2024)[1] == 0 and ak.reviewers_expected(Y2024)[0]
+    text = " ".join(c.value for c in run_app(date_range=Y2024).caption)
+    assert "0 comments that authors left on their own PRs are not counted" in text
 
 
 @pytest.mark.fixture_numbers
