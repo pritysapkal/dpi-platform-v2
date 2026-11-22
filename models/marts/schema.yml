@@ -32,7 +32,8 @@ models:
       lead time, review wait, review coverage, open-PR age. Adds a bot flag, a
       review-before-merge flag and the data_as_of timestamp.
       Has an enforced contract: every column, its type and its not-null rule is declared
-      here, and the build fails if the SQL stops matching.
+      here, and the build fails if the SQL stops matching. Incremental on pr_number with a
+      lookback (see the model's SQL); a full refresh gives the same table.
     config:
       contract:
         enforced: true
@@ -184,7 +185,7 @@ models:
 
       - name: data_as_of
         data_type: timestamp
-        description: When the data was last pulled from GitHub (UTC), from _loaded_at. Same value on every row. Measure anything "as of now", such as how long a PR has been open, against this and not against today's date.
+        description: When the data was last pulled from GitHub (UTC), the time of the last fetch run (stg_github__fetch_runs). Same value on every row. Measure anything "as of now", such as how long a PR has been open, against this and not against today's date.
         constraints:
           - type: not_null
         tests:

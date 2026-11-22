@@ -7,15 +7,22 @@ unit_tests:
     description: >
       PR 1 was merged on 2 March and its only review came on 4 March. It was reviewed (was_reviewed) but not before
       it was merged, so it must not count toward review coverage: was_reviewed_before_merge is false. data_as_of
-      is the time the data was pulled, taken from the staging rows.
+      is the time the data was pulled, taken from the last fetch run.
     model: fct_pull_requests
+    overrides:
+      macros:
+        is_incremental: false
     given:
       - input: ref('int_pr_lifecycle')
         rows:
           - {pr_number: 1, author_login: alice, is_merged: true, was_reviewed: true, opened_at: "2024-03-01 10:00:00", merged_at: "2024-03-02 10:00:00", first_reviewed_at: "2024-03-04 10:00:00"}
-      - input: ref('stg_github__pull_requests')
+      - input: ref('stg_github__fetch_runs')
         rows:
-          - {pr_number: 1, _loaded_at: "2026-11-01 18:34:18"}
+          - {loaded_at: "2026-11-01 18:34:18"}
+      - input: ref('stg_github__pull_requests')
+        rows: []
+      - input: ref('stg_github__pr_reviews')
+        rows: []
     expect:
       rows:
         - {pr_number: 1, was_reviewed: true, was_reviewed_before_merge: false, data_as_of: "2026-11-01 18:34:18"}
@@ -25,6 +32,9 @@ unit_tests:
       Pins down the "at or before the merge" rule. A review at the exact merge instant counts; one second later does
       not; a review on a PR that was never merged does not count; and a merged PR with no review does not count.
     model: fct_pull_requests
+    overrides:
+      macros:
+        is_incremental: false
     given:
       - input: ref('int_pr_lifecycle')
         rows:
@@ -32,9 +42,13 @@ unit_tests:
           - {pr_number: 2, author_login: alice, is_merged: true, was_reviewed: true, merged_at: "2024-03-02 10:00:00", first_reviewed_at: "2024-03-02 10:00:01"}
           - {pr_number: 3, author_login: alice, is_merged: false, was_reviewed: true, first_reviewed_at: "2024-03-02 10:00:00"}
           - {pr_number: 4, author_login: alice, is_merged: true, was_reviewed: false, merged_at: "2024-03-02 10:00:00"}
-      - input: ref('stg_github__pull_requests')
+      - input: ref('stg_github__fetch_runs')
         rows:
-          - {pr_number: 1, _loaded_at: "2026-11-01 18:34:18"}
+          - {loaded_at: "2026-11-01 18:34:18"}
+      - input: ref('stg_github__pull_requests')
+        rows: []
+      - input: ref('stg_github__pr_reviews')
+        rows: []
     expect:
       rows:
         - {pr_number: 1, was_reviewed_before_merge: true}
@@ -50,6 +64,9 @@ unit_tests:
       approved before merge, though was_approved stays true. PR 3 is approved well before the merge: counts. PR 4 is
       approved but never merged: not "before merge". PR 5 is merged and never approved: false.
     model: fct_pull_requests
+    overrides:
+      macros:
+        is_incremental: false
     given:
       - input: ref('int_pr_lifecycle')
         rows:
@@ -58,9 +75,13 @@ unit_tests:
           - {pr_number: 3, author_login: alice, is_merged: true, was_approved: true, merged_at: "2024-03-02 10:00:00", first_approved_at: "2024-03-01 09:00:00"}
           - {pr_number: 4, author_login: alice, is_merged: false, was_approved: true, first_approved_at: "2024-03-01 09:00:00"}
           - {pr_number: 5, author_login: alice, is_merged: true, was_approved: false, merged_at: "2024-03-02 10:00:00"}
-      - input: ref('stg_github__pull_requests')
+      - input: ref('stg_github__fetch_runs')
         rows:
-          - {pr_number: 1, _loaded_at: "2026-11-01 18:34:18"}
+          - {loaded_at: "2026-11-01 18:34:18"}
+      - input: ref('stg_github__pull_requests')
+        rows: []
+      - input: ref('stg_github__pr_reviews')
+        rows: []
     expect:
       rows:
         - {pr_number: 1, was_approved: true, was_approved_before_merge: true}
@@ -68,3 +89,50 @@ unit_tests:
         - {pr_number: 3, was_approved: true, was_approved_before_merge: true}
         - {pr_number: 4, was_approved: true, was_approved_before_merge: false}
         - {pr_number: 5, was_approved: false, was_approved_before_merge: false}
+
+  - name: fct_pull_requests_incremental_run_recomputes_only_recently_written_prs
+    description: >
+      An incremental run, the previous build's data_as_of being 2026-11-10 00:00 and the lookback 3 days (so rows
+      written after 2026-11-07 00:00 count). PR 1 was last written on 2026-11-01: not recomputed. PR 2 was written on
+      2026-11-08, before the previous build but inside the lookback: recomputed. PR 3 is new (written 2026-11-11). PR 4 is
+      an old PR whose PR row is old but which got a late review written on 2026-11-11: recomputed. PR 5 was written
+      exactly at the lookback edge (2026-11-07 00:00, not after it): not recomputed. Every output row carries the new
+      fetch's time.
+    model: fct_pull_requests
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      # as SQL, not rows: dbt reads the columns of a rows input for `this` from the database, and on a first build
+      # (every CI run) the table does not exist yet. Only these two columns of the existing table are read.
+      - input: this
+        format: sql
+        rows: |
+          select cast(1 as bigint) as pr_number, timestamp '2026-11-10 00:00:00' as data_as_of
+      - input: ref('int_pr_lifecycle')
+        rows:
+          - {pr_number: 1, author_login: alice}
+          - {pr_number: 2, author_login: alice}
+          - {pr_number: 3, author_login: bob}
+          - {pr_number: 4, author_login: carol}
+          - {pr_number: 5, author_login: dave}
+      - input: ref('stg_github__fetch_runs')
+        rows:
+          - {loaded_at: "2026-11-10 00:00:00"}
+          - {loaded_at: "2026-11-11 06:00:00"}
+      - input: ref('stg_github__pull_requests')
+        rows:
+          - {pr_number: 1, _loaded_at: "2026-11-01 00:00:00"}
+          - {pr_number: 2, _loaded_at: "2026-11-08 00:00:00"}
+          - {pr_number: 3, _loaded_at: "2026-11-11 06:00:00"}
+          - {pr_number: 4, _loaded_at: "2026-10-01 00:00:00"}
+          - {pr_number: 5, _loaded_at: "2026-11-07 00:00:00"}
+      - input: ref('stg_github__pr_reviews')
+        rows:
+          - {pr_number: 1, _loaded_at: "2026-11-01 00:00:00"}
+          - {pr_number: 4, _loaded_at: "2026-11-11 06:00:00"}
+    expect:
+      rows:
+        - {pr_number: 2, author_login: alice, data_as_of: "2026-11-11 06:00:00"}
+        - {pr_number: 3, author_login: bob, data_as_of: "2026-11-11 06:00:00"}
+        - {pr_number: 4, author_login: carol, data_as_of: "2026-11-11 06:00:00"}

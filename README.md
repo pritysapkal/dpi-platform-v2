@@ -84,7 +84,7 @@ shows association, not cause):
 ```mermaid
 flowchart LR
     S["Source<br/>GitHub REST API<br/>(encode/httpx)"] --> I["Ingestion<br/>fetch_prs.py<br/>all PRs created since 2023-01-01"]
-    I --> W[("Warehouse<br/>DuckDB, raw schema<br/>github_pull_requests, github_pr_reviews<br/>every row stamped with _loaded_at")]
+    I --> W[("Warehouse<br/>DuckDB, raw schema<br/>github_pull_requests, github_pr_reviews, github_fetch_runs<br/>every row stamped with _loaded_at")]
     W --> ST["Staging (views)<br/>stg_github__pull_requests<br/>stg_github__pr_reviews"]
     ST --> INT["Intermediate (view)<br/>int_pr_lifecycle"]
     INT --> FCT["fct_pull_requests<br/>one row per PR"]
@@ -108,8 +108,13 @@ flowchart LR
   expose reviews in bulk), into `raw.github_pull_requests` and
   `raw.github_pr_reviews` in a local DuckDB file. Every request has a timeout and
   retries 429s, 5xx errors and rate-limit responses with backoff; every row is
-  stamped with `_loaded_at` (UTC, one value per run). It is a full refresh each run:
-  523 PRs is about 530 API calls.
+  stamped with `_loaded_at` (UTC, one value per run). **Incremental:** once the database
+  holds a fetch, a run asks only for PRs updated since the previous fetch minus a
+  three-day lookback (sorted by last update, newest first, stopping at the first older
+  one), upserts them by number and replaces all their reviews, in one transaction; the
+  tables are never recreated. Every run, even one that finds nothing, is logged in
+  `raw.github_fetch_runs`, which is what "when the data was last pulled" means.
+  `python fetch_prs.py --full` re-pulls everything (523 PRs is about 530 API calls).
 - **Staging** (views) — casts types and renames columns to consistent conventions,
   and passes `_loaded_at` through. `stg_github__pr_reviews` stays one row per
   *review* (a PR can have zero, one, or many); nothing else touches its grain.
@@ -160,7 +165,7 @@ key in the database, and 15 columns are `NOT NULL`.
 | `review_wait_hours` | double | Hours from opening to the first review. Null if never reviewed. |
 | `time_in_review_hours` | double | Hours from the first review to the merge. Null if not merged, or if the only review came after the merge. |
 | `lead_time_hours` | double | Hours from opening to merge. Null if not merged. **The lead-time metric is calculated from this column.** |
-| `data_as_of` | timestamp | When the data was pulled from GitHub (UTC), the same on every row. Anything "as of now", such as how long a PR has been open, is measured against this, not today's date. |
+| `data_as_of` | timestamp | When the data was pulled from GitHub (UTC): the last fetch run in `raw.github_fetch_runs`, the same on every row. Anything "as of now", such as how long a PR has been open, is measured against this, not today's date. |
 
 ### `dim_contributors` — one row per GitHub login (232 rows)
 
@@ -193,11 +198,12 @@ key in the database, and 15 columns are `NOT NULL`.
 
 ## dbt tests
 
-`dbt build` runs 8 models, **63 data tests** and **6 unit tests** (77 in all), in dependency
+`dbt build` runs 9 models, **65 data tests** and **7 unit tests** (81 in all), in dependency
 order. Every model's primary key gets `unique` and `not_null`; on top of that:
 
 | Model | Beyond the primary key |
 |---|---|
+| `stg_github__fetch_runs` | `unique` and `not_null` on `loaded_at` (one row per fetch run). |
 | `stg_github__pull_requests` | `not_null` on `_loaded_at`. |
 | `stg_github__pr_reviews` | `relationships` (every review belongs to a PR in the data), `accepted_values` on `review_state` (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`, `PENDING`), `not_null` on `_loaded_at`. |
 | `int_pr_lifecycle` | custom `non_negative` on `review_wait_hours` and `lead_time_hours`. |
@@ -228,14 +234,24 @@ whatever GitHub's data looks like:
 | `int_pr_lifecycle_review_after_merge_has_no_time_in_review` | A review that arrives after the PR was merged is not review time: `time_in_review_hours` is null, not negative. A control PR reviewed before merging does get a value. |
 | `fct_pull_requests_review_after_merge_is_not_review_coverage` | The same PR is `was_reviewed` but not `was_reviewed_before_merge`, so it doesn't count toward review coverage. |
 | `fct_pull_requests_review_coverage_boundary` | The "at or before the merge" rule: a review at the exact merge instant counts, one second later does not, and neither does a review on an unmerged PR or a merged PR with none. |
+| `fct_pull_requests_incremental_run_recomputes_only_recently_written_prs` | An incremental run recomputes exactly the PRs whose PR row or any review was written after the previous build minus the 3-day lookback: a PR written inside the lookback, a new PR and an old PR with a late review; not a PR written earlier, nor one written exactly at the lookback edge. |
 | `int_pr_lifecycle_rolls_many_reviews_up_to_one_row_per_pr` | Several out-of-order reviews collapse to one row with the earliest and latest times, reviewers counted once each and both flags set; a PR with no reviews still appears. |
 
 Each unit test was shown to fail when the logic it covers is broken (the post-merge guard removed, distinct reviewers
 replaced by a plain count, the first review taken from the latest one, `<=` changed to `<`, and coverage ignoring the
 merge time), and to fail on a wrong expected value.
 
-**Not covered yet:** source freshness checks (the raw tables now carry `_loaded_at`, so they can be added). Only
-`fct_pull_requests` has a model contract so far.
+**Incremental model.** `fct_pull_requests` is incremental (`unique_key = pr_number`, `delete+insert`). After the first
+build, a run recomputes only the PRs whose PR row or any review row was written since the previous build, minus a
+lookback of 3 days (`var fct_lookback_days`), and a post-hook sets the table-wide `data_as_of` on every row. The other
+marts are small tables rebuilt from it. `ingestion_tests/test_incremental.py` proves it, on the fixture and on the
+frozen real data: the data is taken back to an earlier state (the most recently updated PRs missing, an old PR missing
+its latest review), built, brought forward by the same upsert the fetch uses, built again incrementally, and every mart
+must then equal, row for row, both `dbt run --full-refresh` on the same raw data and a full build from scratch. It also
+shows the run was really incremental (a marked row of an untouched PR survives it) and that the late review on the old
+PR is picked up.
+
+Only `fct_pull_requests` has a model contract so far.
 
 ## Semantic layer
 
@@ -349,14 +365,13 @@ findings tests check that the README's numbers match a frozen copy of the data t
   before the merge, by merge date), in the lead-time breakdown, and in the agent's eval
   question (PRs opened in a year that got any review). Each is documented where it
   appears, but a MetricFlow metric would unify them.
-- **Full refresh, not incremental.** `fetch_prs.py` re-pulls every PR created since
-  2023-01-01 on each run (523 PRs, about 530 API calls), and every dbt model fully
-  rebuilds. Fine at this scale; wouldn't scale to a repo with 50,000+ PRs. At scale:
-  incremental ingestion and incremental dbt materializations keyed on `updated_at`.
-  GitHub's pull-request list endpoint has no `since` parameter (I checked: passing a
-  far-future `since` returns the same PRs), so the way to do it is to sort by `updated`,
-  newest first, and stop paging once you reach PRs older than the last run, with a
-  lookback window for late changes.
+- **Incremental loading works, but the daily workflow does not use it yet.** `fetch_prs.py` and `fct_pull_requests`
+  are incremental (see [dbt tests](#dbt-tests)): GitHub's pull-request list has no `since` parameter (passing a
+  far-future `since` returns the same PRs), so the fetch sorts by `updated`, newest first, and stops at the previous
+  fetch minus a three-day lookback. But the daily workflow starts on a fresh runner with an empty database, so it still
+  does a full fetch and a full build every day. Keeping the raw tables between runs (for example as Parquet on the
+  `data` branch, restored before the fetch) is the next step. The other marts and the views are still rebuilt in
+  full; fine at this scale.
 - **History before 2023 isn't loaded.** The window is a constant at the top of
   `fetch_prs.py`, so every year in the data is complete, but older history is missing.
 - **One data source, on purpose.** This project deliberately covers PRs and
@@ -382,7 +397,8 @@ findings tests check that the README's numbers match a frozen copy of the data t
 ```
 pip install -r requirements.txt
 export GH_TOKEN=your_github_pat        # any public-repo-read token works
-python fetch_prs.py                    # pulls every PR since 2023-01-01 plus reviews (about 530 API calls)
+python fetch_prs.py                    # first run: every PR since 2023-01-01 plus reviews (about 530 API calls);
+                                       # later runs: only PRs updated since the last fetch (--full to re-pull all)
 dbt build                              # runs every model + test
 mf list metrics                        # semantic layer
 pip install -r dashboard/requirements.txt && streamlit run dashboard/app.py   # dashboard (reads dev.duckdb)
@@ -414,14 +430,14 @@ Four markers (`pytest.ini`) put every test in exactly one group; a test checks t
 
 | Marker | Meaning | Tests |
 |---|---|---|
-| `no_db` | touches no database at all (a guard fails the test if it tries) | 461 |
+| `no_db` | touches no database at all (a guard fails the test if it tries) | 471 |
 | `any_data` | reads the database, asserts only what is true on any data | 123 |
 | `fixture_numbers` | exact figures of the fixture | 67 |
 | `frozen_data` | exact figures of the frozen real pull (the README findings) | 7 |
 
 Which tests each automated run executes is written once, in `workflow_selections.py`: every push runs everything except
-`frozen_data` on the fixture (651 tests) and then `frozen_data` on the frozen copy (7); the daily live run is limited to
-`no_db or any_data` (584 tests), so a number that is only true of one day's data can never fail it. A test that belongs to
+`frozen_data` on the fixture (661 tests) and then `frozen_data` on the frozen copy (7); the daily live run is limited to
+`no_db or any_data` (594 tests), so a number that is only true of one day's data can never fail it. A test that belongs to
 no run would never execute, so `ingestion_tests/test_marker_coverage.py` fails if any test is unclassified or unselected.
 
 **Zero skips.** With `DPIP_FAIL_ON_SKIP=1` (set in CI) a skipped test is reported as a failure that names its reason.
@@ -457,15 +473,16 @@ since GitHub delays schedules that start on the hour), and whenever someone star
 
 **What a run does**, stopping at the first step that fails:
 
-1. **Fetch** every PR and review from GitHub (`fetch_prs.py`, with the `GH_TOKEN` secret; only this step sees it).
+1. **Fetch** every PR and review from GitHub (`fetch_prs.py`, with the `GH_TOKEN` secret; only this step sees it). The
+   runner starts with an empty database, so this is a full fetch for now.
 2. **`dbt build`**: rebuild every model and run every data test and unit test on the new data.
-3. **`dbt source freshness`**: how old is the newest fetch? Every raw row carries `_loaded_at`, the UTC time of the fetch
-   that wrote it. Older than **36 hours** is a warning (one day was missed); older than **72 hours** fails the run (the
+3. **`dbt source freshness`**: how long since the last fetch? Every fetch run is logged in `raw.github_fetch_runs`
+   (measured there, not on the PR rows, because an incremental fetch on a quiet day rewrites no PR). Older than **36 hours** is a warning (one day was missed); older than **72 hours** fails the run (the
    data is three days stale). Right after a successful fetch this passes easily; it is there to catch a fetch that
    "succeeds" without writing new data. The dashboard has its own, stricter warning: it says so once its data is
    more than 48 hours old.
 4. **`mf validate-configs`**: the metric definitions still work against the new tables.
-5. **The tests that hold on any data** (`no_db or any_data`, 584 tests) with `DPIP_FAIL_ON_SKIP=1`. Tests that pin exact
+5. **The tests that hold on any data** (`no_db or any_data`, 594 tests) with `DPIP_FAIL_ON_SKIP=1`. Tests that pin exact
    numbers are left out on purpose: today's numbers differ from yesterday's, and those tests already run on fixed data
    on every push.
 6. **Export the snapshot** the public dashboard reads (`ops/export_snapshot.py`): reached only if every step above passed.

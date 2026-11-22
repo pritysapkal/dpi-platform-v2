@@ -3,15 +3,21 @@ version: 2
 sources:
   - name: github
     schema: raw
-    description: Raw tables written by fetch_prs.py. Every row carries _loaded_at, the UTC time of the fetch that wrote it.
-    config:
-      # Source freshness: how old is the newest fetch? Checked by `dbt source freshness` in the daily refresh workflow
-      # (not by `dbt build`). A daily fetch is normally under 24 hours old; 36 hours means one run was missed (warn),
-      # 72 hours means the data is three days stale and the dashboard is showing old numbers (error, the run fails).
-      loaded_at_field: _loaded_at
-      freshness:
-        warn_after: {count: 36, period: hour}
-        error_after: {count: 72, period: hour}
+    description: >
+      Raw tables written by fetch_prs.py. PR and review rows carry _loaded_at, the UTC time of the fetch that last wrote
+      them; github_fetch_runs has one row per fetch run.
     tables:
       - name: github_pull_requests
       - name: github_pr_reviews
+      - name: github_fetch_runs
+        description: One row per fetch run (full or incremental), even a run that found nothing new.
+        config:
+          # Source freshness: how long since the last fetch? Checked by `dbt source freshness` in the daily refresh
+          # workflow (not by `dbt build`). A daily fetch is normally under 24 hours old; 36 hours means one run was
+          # missed (warn), 72 hours means the data is three days stale and the dashboard is showing old numbers (error,
+          # the run fails). Measured on the fetch log, not on the PR rows: an incremental fetch on a quiet day rewrites
+          # no PR, and that is not stale data.
+          loaded_at_field: loaded_at
+          freshness:
+            warn_after: {count: 36, period: hour}
+            error_after: {count: 72, period: hour}
