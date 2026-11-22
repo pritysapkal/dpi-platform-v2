@@ -646,7 +646,7 @@ pip install -r agent/requirements.txt
 cp agent/.env.example agent/.env          # then paste a key from https://aistudio.google.com/apikey
 python -m agent.cli "Which month had the most merged pull requests?"
 python -m agent.cli --model gemini-3.5-flash-lite --sticky-fallback "..."
-python -m pytest agent/tests -v           # 255 tests, no API key needed
+python -m pytest agent/tests -v           # 259 tests, no API key needed
 python -m agent.evals.run_evals --model gemini-3.5-flash-lite
 ```
 

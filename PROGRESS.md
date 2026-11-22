@@ -194,6 +194,138 @@ Phase 3: **item 8, incremental loading, is done on the `incremental` branch (202
 - **Not done, and the next step:** the daily workflow starts on a fresh runner with an empty database, so it still does a full fetch and a full build every day; the incremental path only pays off where the database is kept (locally). Next: keep the raw tables between runs (for example publish them as Parquet on the `data` branch and restore them before the fetch), then let the scheduled run fetch incrementally.
 - **Note for your own `dev.duckdb`:** it has no `raw.github_fetch_runs` yet, so `dbt build` on it fails until you run `python fetch_prs.py` once (that creates the table; the first run is incremental from the newest `_loaded_at`). Detach `dev.duckdb` in the VS Code DuckDB extension first.
 
-Your own tasks:
-- Rewrite the README findings in your own voice. `dashboard/tests/test_findings.py` checks exact phrases from the findings, so if you reword a sentence, update the phrase list in that file too.
-- Update the DPIP bullets on your resume; the old "500 PRs" figures are outdated. Verified current facts: 523 PRs (every PR since 2023-01-01), 288 merged, 835 reviews; 8 dbt models and 61 tests; 490 automated tests; MetricFlow metrics (median, p90) at PR grain; a Streamlit dashboard; an LLM agent with 7 tools, code-enforced guardrails and a 23-question eval at 23/23.
+## Zero-context handoff (verified 2026-11-22)
+
+The project is complete for the current portfolio scope. This section is the
+authoritative handoff; older sections above record historical progress and
+their intermediate counts.
+
+### Verified current state
+
+- Repository: `pritysapkal/dpi-platform-v2` (remote `origin`)
+- Workspace: `C:\dev_productivity\dpi_project`
+- Branch/HEAD: `main` at `f273777`
+- Working tree: clean at the start of this handoff
+- Source: `encode/httpx`, pull requests created since `2023-01-01`
+- Real snapshot recorded in the repository: 523 pull requests, 288 merged, 835 reviews
+- Extraction date: `2026-11-01`
+- dbt: 9 models, 65 data tests, 7 unit tests
+- Python: 668 collected tests
+  - 153 ingestion
+  - 259 agent
+  - 256 dashboard
+  - 471 `no_db`
+  - 123 `any_data`
+  - 67 `fixture_numbers`
+  - 7 `frozen_data`
+- `no_db or any_data`: 594 tests
+- Push/frozen split: 661 fixture-backed tests plus 7 frozen findings tests
+- Evaluation: 23 questions; stored/recorded result `gemini-3.5-flash-lite`: 23/23
+- Live demo: https://dpi-platform-v2-kjagmvmcf5ryacmwa7odo2.streamlit.app/
+
+### Partially completed
+
+#### Raw-table persistence and fully incremental scheduled refresh
+
+- **Current behavior:** `fetch_prs.py` can perform an incremental upsert after
+  a previous fetch is present. The dbt fact model is incremental. The GitHub
+  Actions refresh runner checks out `main` into an empty workspace and starts
+  with no `dev.duckdb`, so scheduled runs still perform a full fetch.
+- **What works:** incremental PR/review upsert, fetch-run logging,
+  3-day lookback paging, incremental `fct_pull_requests`, and fixture/frozen
+  proof tests.
+- **Exact missing implementation:** persist `raw.github_pull_requests`,
+  `raw.github_pr_reviews`, and `raw.github_fetch_runs` (or an equivalent raw
+  state) between runners, restore that state before fetch, and verify that
+  consecutive scheduled runs use a nonempty watermark. This is not solved by
+  publishing the dashboard-only Parquet snapshot, because it does not contain
+  the raw fetch-run state.
+- **Relevant paths:** `fetch_prs.py`, `models/staging/github/stg_github__fetch_runs.sql`,
+  `models/staging/github/sources.yml`, `.github/workflows/refresh.yml`,
+  `ops/export_snapshot.py`, `ingestion_tests/test_incremental.py`,
+  `dashboard/data_source.py`
+- **Next command/change:** add a workflow artifact/cache/branch restore step,
+  write and upload the raw DuckDB state or raw export after successful build,
+  restore it before `python fetch_prs.py`, and add a two-run workflow test.
+  Do not run a live fetch to initialize this until credentials, API limits,
+  local data, and explicit authorization have been checked.
+- **Efficient estimate:** 1-2 engineering days.
+- **Dependencies:** a durable storage mechanism available to GitHub Actions,
+  credentials limited to the existing refresh job, and a retention/format
+  policy for raw state.
+- **Gotchas:** GitHub Actions artifacts are not suitable for mutating shared
+  state unless download/upload sequencing is exact; a `data` branch can grow
+  if not atomically replaced; cache keys must match and cache restore can leave
+  stale state; concurrent runs must remain serialized.
+- **Verification:** run two offline fixture cycles or a two-run scheduled
+  rehearsal; assert the second run reads the previous fetch-run watermark,
+  writes fewer or no PR rows when no changes exist, logs an empty run, and
+  publishes only after dbt/source-freshness/test checks pass.
+
+#### Local `raw.github_fetch_runs` initialization
+
+- **Current behavior:** `dev.duckdb` currently has PR/review data but no
+  `raw.github_fetch_runs` table. This is the specific local condition described
+  by the previous handoff.
+- **What works:** fixture/frozen loaders log fetch runs and the model/view logic
+  already consumes `stg_github__fetch_runs`.
+- **Missing:** one explicit, credential-aware initialization run or a documented
+  safe rebuild that creates/logs the local fetch state.
+- **Next command:** after checking token/API rate limits and explicit approval,
+  run `python fetch_prs.py` in `dpi_project`; the first run creates the raw
+  fetch table and pulls the full window.
+- **Effort:** minutes for execution plus verification.
+- **Dependencies:** `GH_TOKEN`, network/API availability, local DuckDB availability.
+- **Gotcha:** do not run live fetch automatically; do not delete or replace
+  `dev.duckdb`.
+- **Verify:** query
+  `select count(*), max(loaded_at) from raw.github_fetch_runs`, then run
+  `dbt parse` or `dbt build` as appropriate.
+
+### Remaining roadmap (optional)
+
+1. **Persist raw data for incremental scheduled refresh** - **Required next
+   engineering task, not optional portfolio content.** Why: it turns the
+   implemented incremental fetch/dbt logic into a genuinely incremental daily
+   pipeline and reduces API and rebuild cost. Main files:
+   `.github/workflows/refresh.yml`, `fetch_prs.py`,
+   `fixtures/load_fixture.py`, `ingestion_tests/test_incremental.py`.
+   Sequence: choose durable state format, add restore step, run fetch, run
+   dbt, export/upload raw state only after success, add two-run tests.
+   Estimate: 1-2 days. Risks: runner cache/artifact durability, branch
+   contention, raw schema migration, stale state. Acceptance: a second
+   scheduled-style run uses the persisted latest fetch timestamp and leaves
+   unchanged PR rows untouched.
+
+2. **Add a BigQuery target** - Optional. Why: demonstrates warehouse portability
+   and target separation while preserving the DuckDB portfolio pipeline.
+   Files: `profiles/profiles.yml`, `dbt_project.yml`, root/agent/dashboard
+   requirements, CI/refresh workflows, dbt SQL and tests.
+   Sequence: add a separate BigQuery profile/target, parameterize warehouse-
+   specific SQL, run dbt parse/build in a test project, then add deployment
+   selection only after parity tests pass. Estimate: 3-5 days.
+   Risks: dbt/DuckDB SQL differences, credentials, cloud cost, data exposure,
+   and semantic-layer parity. Acceptance: same fixture counts and `dbt build`
+   pass/fail behavior on BigQuery without replacing DuckDB defaults.
+
+3. **Build a Power BI report** - Optional. Why: provides an enterprise BI
+   consumption layer over the published snapshot or a cloud warehouse.
+   Files: `ops/export_snapshot.py`, `dashboard/data_source.py`,
+   `models/marts/`, `analyses/key_findings.sql`, new report/connection files.
+   Sequence: document the snapshot schema, connect a prototype to Parquet,
+   implement PR/merge/review measures, validate against dashboard SQL, publish
+   privately or share a sanitized PBIX. Estimate: 2-4 days.
+   Risks: Parquet data freshness, DAX/model divergence, credential sharing,
+   and unsupported direct-relationship assumptions. Acceptance: report totals
+   match the frozen snapshot and include source freshness/data-as-of.
+
+4. **Expand the LLM eval set toward approximately 35 questions** - Optional.
+   Why: improves coverage of edge cases and guards against model drift.
+   Files: `agent/evals/eval_set.json`, `agent/evals/run_evals.py`,
+   `agent/evals/results.md`, `agent/evals/runs/`.
+   Sequence: add 12-15 grounded questions, add SQL-only ground truth, define
+   tools/traps/tolerances, run offline scorer tests, obtain approval, then run
+   the live model once. Estimate: 1-3 days.
+   Risks: ambiguous ground truth, date drift, API cost, and false-score changes.
+   Acceptance: all questions have executable SQL, scored tests pass, and a live
+   run is recorded with model/date/API-error fields.
