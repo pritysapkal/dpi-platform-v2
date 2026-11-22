@@ -1,6 +1,15 @@
 version: 2
 
 models:
+  - name: stg_github__fetch_runs
+    description: One row per run of fetch_prs.py (full or incremental), even a run that wrote nothing. max(loaded_at) is when the data was last pulled from GitHub.
+    columns:
+      - name: loaded_at
+        description: When the fetch ran (UTC, no timezone marker); the _loaded_at of every row that run wrote.
+        tests:
+          - not_null
+          - unique
+
   - name: stg_github__pull_requests
     description: One row per pull request on the tracked GitHub repo, with timestamps cast and columns renamed to consistent staging conventions.
     columns:

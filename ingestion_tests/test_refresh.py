@@ -189,9 +189,12 @@ def test_publish_waits_for_a_successful_refresh_and_force_pushes_one_orphan_comm
 
 # ---------- the freshness rule ----------
 
-def test_raw_sources_warn_after_36_hours_and_fail_after_72():
+def test_the_last_fetch_warns_after_36_hours_and_fails_after_72():
+    # Measured on the fetch log, not on the PR rows: an incremental fetch on a quiet day writes no PR and is not stale.
     source = yaml.safe_load((ROOT / "models" / "staging" / "github" / "sources.yml").read_text(encoding="utf-8"))["sources"][0]
-    config = source["config"]
-    assert config["loaded_at_field"] == "_loaded_at"
+    tables = {t["name"]: t for t in source["tables"]}
+    assert set(tables) == {"github_pull_requests", "github_pr_reviews", "github_fetch_runs"}
+    assert "config" not in source and all("config" not in tables[t] for t in ("github_pull_requests", "github_pr_reviews"))
+    config = tables["github_fetch_runs"]["config"]
+    assert config["loaded_at_field"] == "loaded_at"
     assert config["freshness"] == {"warn_after": {"count": 36, "period": "hour"}, "error_after": {"count": 72, "period": "hour"}}
-    assert {t["name"] for t in source["tables"]} == {"github_pull_requests", "github_pr_reviews"}

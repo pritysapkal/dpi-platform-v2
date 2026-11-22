@@ -17,7 +17,7 @@ python fixtures/load_fixture.py dev.duckdb  # load them; then run: dbt build
 python fixtures/build_fixture.py --facts    # print the expected answers
 ```
 
-The loader has no default path and **refuses to touch a database that holds real data**: it replaces the two raw tables,
+The loader has no default path and **refuses to touch a database that holds real data**: it replaces the raw tables (and writes one row to `raw.github_fetch_runs`, the dataset's load time),
 so it only works on a new file or on a file that already contains just this fixture.
 
 ## The second dataset: the real pull, frozen
