@@ -1,6 +1,28 @@
 -- Fact table: one row per pull request. Every PR-level metric (lead time, review wait,
 -- review coverage, open-PR age) should be calculated from this table, so a number
 -- means the same thing wherever it is shown.
+--
+-- Incremental: after the first build, a run recomputes only the PRs whose PR row or any review row was written by a
+-- fetch since the previous build (rows with _loaded_at after the previous build's data_as_of, minus a lookback), and
+-- replaces those rows by pr_number. A late review on an old PR is written by the fetch together with its PR, so the PR
+-- is recomputed from all its reviews. The lookback (var fct_lookback_days, default 3) also recomputes rows written
+-- shortly before the previous build, for a fetch that overlapped it. `dbt build --full-refresh` rebuilds every row and
+-- must give the same table (ingestion_tests/test_incremental.py checks it on the fixture and the frozen data).
+-- data_as_of is one value for the whole table, so a post-hook sets it on every row after each run.
+
+{{
+    config(
+        materialized='incremental',
+        unique_key='pr_number',
+        incremental_strategy='delete+insert',
+        on_schema_change='fail',
+        post_hook="update {{ this }} set data_as_of = (select max(loaded_at) from {{ ref('stg_github__fetch_runs') }}) where data_as_of is distinct from (select max(loaded_at) from {{ ref('stg_github__fetch_runs') }})"
+    )
+}}
+
+{#- Referenced here, outside the incremental branch, so dbt always knows they come before this model. -#}
+{%- set pull_requests = ref('stg_github__pull_requests') -%}
+{%- set reviews = ref('stg_github__pr_reviews') -%}
 
 with lifecycle as (
 
@@ -8,15 +30,33 @@ with lifecycle as (
 
 ),
 
--- One value for the whole table: when the data was last pulled from GitHub.
+-- One value for the whole table: when the data was last pulled from GitHub (the last fetch run).
 -- Anything "as of now" (like how long a PR has been open) must be measured against
 -- this, not today's date, because the data is only as fresh as the last fetch.
 load_info as (
 
-    select max(_loaded_at) as data_as_of
-    from {{ ref('stg_github__pull_requests') }}
+    select max(loaded_at) as data_as_of
+    from {{ ref('stg_github__fetch_runs') }}
 
-)
+){% if is_incremental() %},
+
+-- The PRs to recompute: written (PR row or any review) since the previous build, minus the lookback.
+since_previous_build as (
+
+    select max(data_as_of) - interval '{{ var("fct_lookback_days", 3) }} days' as since
+    from {{ this }}
+
+),
+
+changed_prs as (
+
+    select pr_number from {{ pull_requests }}
+    where _loaded_at > (select since from since_previous_build)
+    union
+    select pr_number from {{ reviews }}
+    where _loaded_at > (select since from since_previous_build)
+
+){% endif %}
 
 select
     lc.pr_number,
@@ -57,3 +97,6 @@ select
 
 from lifecycle lc
 cross join load_info li
+{% if is_incremental() %}
+where lc.pr_number in (select pr_number from changed_prs)
+{% endif %}
