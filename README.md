@@ -15,7 +15,7 @@ agent (Google Gemini) that answers plain-English questions about these metrics
 through a small set of read-only tools, with guardrails enforced in code and an
 eval set scored against SQL ground truth.
 
-**Live demo:** _link coming soon (Streamlit Community Cloud)_. It shows the latest data published by the
+**Live demo:** [https://dpi-platform-v2-kjagmvmcf5ryacmwa7odo2.streamlit.app/](https://dpi-platform-v2-kjagmvmcf5ryacmwa7odo2.streamlit.app/) (Streamlit Community Cloud). It shows the latest data published by the
 [daily refresh](#daily-data-refresh-and-alerts); see [The public dashboard and the published snapshot](#the-public-dashboard-and-the-published-snapshot).
 
 ## Key findings
@@ -265,6 +265,10 @@ quoted. The dashboard and the agent compute the same numbers from the same table
 PRs with a median of 23.91 h (humans only: 92 PRs, 23.18 h).
 
 ## Dashboard
+
+**Live:** [https://dpi-platform-v2-kjagmvmcf5ryacmwa7odo2.streamlit.app/](https://dpi-platform-v2-kjagmvmcf5ryacmwa7odo2.streamlit.app/). The public copy reads the snapshot that the daily refresh publishes (see
+[The public dashboard and the published snapshot](#the-public-dashboard-and-the-published-snapshot)); run locally, the
+same app reads `dev.duckdb`.
 
 **Why a custom Streamlit dashboard instead of a BI tool:** the original plan
 was [Evidence.dev](https://evidence.dev). It turns out "Evidence.dev" now
