@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-28T10:59:20Z",
+  "data_as_of": "2026-11-28T10:57:17Z",
+  "source_commit": "bbb3929929d2dfeb8e0f7da1dee5686d64ee1ad8",
+  "tables": {
+    "fct_pull_requests": {
+      "file": "fct_pull_requests.parquet",
+      "relation": "main.fct_pull_requests",
+      "rows": 562,
+      "bytes": 34222,
+      "sha256": "2e26adec64c1812be2af276688f339d3fa53f79482e85aa95e631310faec64bf"
+    },
+    "dim_contributors": {
+      "file": "dim_contributors.parquet",
+      "relation": "main.dim_contributors",
+      "rows": 262,
+      "bytes": 7418,
+      "sha256": "97a4b738f92797900d83f1c90d3773570e5ba4f38b4638750013ef183c719b49"
+    },
+    "dim_date": {
+      "file": "dim_date.parquet",
+      "relation": "main.dim_date",
+      "rows": 1461,
+      "bytes": 6989,
+      "sha256": "ae3111320ae314eeb2790887aeac3d90fd38b3449850da248140b2d3f22a92e4"
+    },
+    "pr_reviews": {
+      "file": "pr_reviews.parquet",
+      "relation": "main.stg_github__pr_reviews",
+      "rows": 867,
+      "bytes": 11467,
+      "sha256": "480b55884b7a82716340bdf734af03e60b9fe3f9db1ef022d91113c248bbce1f"
+    }
+  }
+}
